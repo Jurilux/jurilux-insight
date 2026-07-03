@@ -1,0 +1,16 @@
+# Codes luxembourgeois consolidés — socle du corpus « lois » (Legilux filestore).
+# Usage : python -m ingest.fetch_legilux ingest/legilux_codes.txt /data/laws
+#         python -m ingest.index_pdfs /data/laws --source-type law
+# Versions consolidées validées le 2026-07-03 (200 application/pdf). Mettre à jour
+# la date dans l'URL quand une consolidation plus récente est publiée.
+# Codes usuels manquants (slug/date à confirmer) : commerce, sociétés, assurances.
+https://legilux.public.lu/filestore/eli/etat/leg/code/travail/20240804/fr/pdf/eli-etat-leg-code-travail-20240804-fr-pdf.pdf
+https://legilux.public.lu/filestore/eli/etat/leg/code/civil/20180709/fr/pdf/eli-etat-leg-code-civil-20180709-fr-pdf.pdf
+https://legilux.public.lu/filestore/eli/etat/leg/code/penal/20220812/fr/pdf/eli-etat-leg-code-penal-20220812-fr-pdf.pdf
+https://legilux.public.lu/filestore/eli/etat/leg/code/procedure_civile/20231101/fr/pdf/eli-etat-leg-code-procedure_civile-20231101-fr-pdf.pdf
+https://legilux.public.lu/filestore/eli/etat/leg/code/procedure_penale/20230101/fr/pdf/eli-etat-leg-code-procedure_penale-20230101-fr-pdf.pdf
+https://legilux.public.lu/filestore/eli/etat/leg/code/securite_sociale/20240101/fr/pdf/eli-etat-leg-code-securite_sociale-20240101-fr-pdf.pdf
+https://legilux.public.lu/filestore/eli/etat/leg/code/consommation/20220101/fr/pdf/eli-etat-leg-code-consommation-20220101-fr-pdf.pdf
+https://legilux.public.lu/filestore/eli/etat/leg/code/route/20240210/fr/pdf/eli-etat-leg-code-route-20240210-fr-pdf.pdf
+https://legilux.public.lu/filestore/eli/etat/leg/code/environnement/20250101/fr/pdf/eli-etat-leg-code-environnement-20250101-fr-pdf.pdf
+https://legilux.public.lu/filestore/eli/etat/leg/code/fonction_publique/20250101/fr/pdf/eli-etat-leg-code-fonction_publique-20250101-fr-pdf.pdf

@@ -40,8 +40,13 @@ def main() -> None:
                 print(f"déjà présent : {name}")
                 continue
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "jurilux-ingest/1.0"})
-                with urllib.request.urlopen(req, timeout=60) as r, dest.open("wb") as f:
+                # Legilux (Apache/WAF) renvoie 403 sur un User-Agent non navigateur.
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                                  "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+                    "Accept": "application/pdf,*/*",
+                })
+                with urllib.request.urlopen(req, timeout=120) as r, dest.open("wb") as f:
                     f.write(r.read())
                 meta.write(json.dumps({"file": name, "pdf_url": url, "url": url}) + "\n")
                 print(f"OK {name}")
