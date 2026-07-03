@@ -1,0 +1,57 @@
+# Déploiement backend — même mécanique SSH que deploy-dev.yml de jurilux-web
+# (alias deploytarget + user deploy en dur : évite les 2 bugs de quoting résolus).
+# Secrets requis (repo jurilux-api) : DEPLOY_HOST, DEPLOY_SSH_KEY.
+# Prérequis VPS : /opt/jurilux-api/.env présent (voir RUNBOOK_API.md).
+name: Deploy API (VPS OVH)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-api
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          {
+            echo "Host deploytarget"
+            echo "  HostName $HOST"
+            echo "  User deploy"
+            echo "  IdentityFile ~/.ssh/deploy_key"
+            echo "  IdentitiesOnly yes"
+            echo "  StrictHostKeyChecking accept-new"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          echo "diag: host_len=${#HOST} key_len=${#KEY}"
+
+      - name: Sync sources
+        run: |
+          ssh deploytarget "sudo mkdir -p /opt/jurilux-api && sudo chown -R deploy:deploy /opt/jurilux-api"
+          rsync -az --delete --exclude '.env' --exclude 'data/' ./ deploytarget:/opt/jurilux-api/
+
+      - name: Build & restart
+        run: |
+          ssh deploytarget "cd /opt/jurilux-api && test -f .env || { echo 'ERREUR: /opt/jurilux-api/.env manquant (voir RUNBOOK_API.md)'; exit 1; }"
+          ssh deploytarget "cd /opt/jurilux-api && sudo docker compose up -d --build"
+
+      - name: Smoke test
+        run: |
+          sleep 10
+          ssh deploytarget "curl -sf http://127.0.0.1:8088/health" \
+            && echo "health: OK" \
+            || { echo 'health: KO (normal tant que le corpus/API key ne sont pas en place — vérifier docker compose logs)'; exit 1; }
