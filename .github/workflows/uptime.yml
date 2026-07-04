@@ -1,0 +1,25 @@
+# Supervision légère : ping horaire de /health. En cas d'échec, le run échoue →
+# notification GitHub (mail au propriétaire). Cadence ajustable (attention aux minutes
+# Actions sur repo privé). URL cible : variable repo HEALTH_URL (défaut = IP du VPS ;
+# basculer sur https://dev.jurilux.lu/health une fois le DNS + TLS en place).
+name: Uptime check
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # toutes les heures
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        env:
+          URL: ${{ vars.HEALTH_URL || 'http://51.178.16.135/health' }}
+        run: |
+          body=$(curl -s --max-time 20 -w "\n%{http_code}" "$URL") || { echo "curl a échoué"; exit 1; }
+          code=$(printf '%s' "$body" | tail -1)
+          echo "GET $URL -> HTTP $code"
+          printf '%s' "$body" | head -c 300; echo
+          test "$code" = "200" || { echo "::error::/health non OK ($code)"; exit 1; }
+          printf '%s' "$body" | grep -q '"status":"ok"' || { echo "::error::status != ok"; exit 1; }

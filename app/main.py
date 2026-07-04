@@ -12,7 +12,7 @@ from collections import defaultdict, deque
 
 from fastapi import FastAPI, Request, Response
 
-from . import rag, search
+from . import metrics, rag, search
 from .config import settings
 from .schemas import AskRequest, AskResponse
 
@@ -69,23 +69,44 @@ def corpus() -> dict:
     return search.corpus_overview()
 
 
+@app.get("/api/metrics")
+def get_metrics() -> dict:
+    """Métriques d'observabilité (compteurs volatils par process)."""
+    return metrics.snapshot()
+
+
 @app.post("/api/ask", response_model=AskResponse, response_model_exclude_none=False)
 def ask(req: AskRequest, request: Request) -> AskResponse:
+    t0 = time.time()
+    metrics.mark_ask()
+    metrics.incr("ask_total")
+
     if not _rate_ok(_client_ip(request)):
+        metrics.incr("ask_rate_limited")
+        metrics.incr("ask_refused")
+        metrics.record_latency_ms((time.time() - t0) * 1000)
         return rag.refusal(
             "Trop de requêtes en peu de temps. Patientez un instant avant de réessayer."
         )
+
     try:
         hits = search.search(req.q, req.topK, req.filters)
     except Exception:
         log.exception("Meilisearch indisponible")
-        return rag.refusal("Le moteur de recherche est momentanément indisponible. Réessayez dans un instant.")
+        metrics.incr("ask_errors")
+        resp = rag.refusal("Le moteur de recherche est momentanément indisponible. Réessayez dans un instant.")
+    else:
+        try:
+            resp = rag.answer(req.q, hits, req.temperature)
+        except Exception:
+            log.exception("Erreur LLM")
+            metrics.incr("ask_errors")
+            resp = rag.refusal("La génération de réponse a échoué. Réessayez dans un instant.")
 
-    try:
-        return rag.answer(req.q, hits, req.temperature)
-    except Exception:
-        log.exception("Erreur LLM")
-        return rag.refusal("La génération de réponse a échoué. Réessayez dans un instant.")
+    if getattr(resp, "refused", False):
+        metrics.incr("ask_refused")
+    metrics.record_latency_ms((time.time() - t0) * 1000)
+    return resp
 
 
 if __name__ == "__main__":

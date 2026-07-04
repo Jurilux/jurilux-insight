@@ -131,6 +131,14 @@ def test_corpus_overview(monkeypatch):
     assert b["decisions"] == 49570 and b["texts"] == 10 and b["latest_year"] == 2026
 
 
+def test_metrics_endpoint(monkeypatch):
+    monkeypatch.setattr(search, "search", lambda q, k, f: [])
+    client.post("/api/ask", json={"q": "x"})  # incrémente les compteurs
+    b = client.get("/api/metrics").json()
+    assert {"uptime_s", "ask_total", "ask_refused", "refusal_rate"} <= set(b)
+    assert b["ask_total"] >= 1
+
+
 def test_filter_expression():
     from app.schemas import SearchFilters
     from app.search import _filter_expr
