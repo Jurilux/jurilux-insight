@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     anthropic_max_tokens: int = 2048
 
     # Divers
-    prompt_version: str = "rebuild-2026-07-v1"
+    prompt_version: str = "rebuild-2026-07-v2"  # v2 : biais anti-refus (réponse partielle privilégiée)
     max_context_chunks: int = 16  # chunks max injectés dans le prompt
     hybrid_semantic_ratio: float = 0.0  # 0 = mots-clés seuls ; >0 active la recherche hybride (sémantique)
     snippet_len: int = 400
