@@ -2,7 +2,7 @@
 # Rafraîchit le corpus (V1.5 « corpus vivant »), à lancer par cron.
 # - jurisprudence : re-télécharge les zips des années récentes (nouvelles décisions
 #   ajoutées aux archives de l'année en cours) pour tous les datasets data.public.lu ;
-# - lois : fetch_legilux ne re-télécharge que les consolidations au nouveau nom (idempotent) ;
+# - lois : fetch_legilux_full (toute la législation consolidée), idempotent (saute l'existant) ;
 # - ré-indexe, puis met à jour l'index `corpus_meta` (périmètre affiché par le front).
 #
 # Ré-indexer ~50k PDFs prend 1–3 h : prévu pour tourner en cron mensuel, la nuit.
@@ -13,6 +13,16 @@ COMPOSE="docker compose -f /opt/jurilux-api/docker-compose.yml"
 KEY=$(grep ^MEILI_MASTER_KEY /opt/jurilux-api/.env | cut -d= -f2)
 MEILI=http://127.0.0.1:7700
 YEAR=$(date +%Y); MIN=$((YEAR-1))
+
+# Garde anti-concurrence #1 : un seul refresh à la fois (évite deux cron qui se chevauchent).
+exec 9>/var/lock/jurilux-refresh.lock
+flock -n 9 || { echo "== $(date -Is) refresh déjà en cours, abandon =="; exit 0; }
+
+# Garde anti-concurrence #2 : ne jamais écrire dans l'index pendant une (ré)indexation en
+# cours (ex. reconfiguration d'embedder / ré-embedding) — deux écritures concurrentes = corruption.
+if curl -s -H "Authorization: Bearer $KEY" "$MEILI/indexes/chunks/stats" | grep -q '"isIndexing":true'; then
+  echo "== $(date -Is) index en cours d'indexation, refresh reporté =="; exit 0
+fi
 
 echo "== $(date -Is) refresh corpus (jurisprudence >= $MIN, lois) =="
 
@@ -27,8 +37,9 @@ while u:
 print(' '.join(out))")
 python3 ingest/fetch_jurisprudence.py /data/pdfs --min-year "$MIN" $SLUGS || echo "WARN fetch jurisprudence partiel"
 
-# 2. Lois — consolidations nouvelles seulement (fetch_legilux saute l'existant).
-python3 ingest/fetch_legilux.py ingest/legilux_codes.txt /data/laws || echo "WARN fetch lois partiel"
+# 2. Lois — législation consolidée COMPLÈTE (les 1202 textes, pas seulement 10 codes).
+#    Idempotent : fetch_legilux_full saute les PDF déjà présents, ne télécharge que le nouveau.
+python3 ingest/fetch_legilux_full.py /data/laws || echo "WARN fetch lois partiel"
 
 # 3. Ré-indexation (idempotent : mêmes chunk_id -> upsert).
 $COMPOSE run --rm -v /data:/data api python -m ingest.index_pdfs /data/laws --source-type law
