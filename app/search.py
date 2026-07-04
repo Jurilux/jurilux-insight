@@ -105,16 +105,10 @@ def corpus_overview() -> dict:
     return data
 
 
-def search(q: str, top_k: int, filters: SearchFilters) -> list[Hit]:
-    idx = _client().index(settings.meili_index)
-    params: dict = {"limit": top_k}
-    expr = _filter_expr(filters)
-    if expr:
-        params["filter"] = expr
-    res = idx.search(q, params)
-    hits: list[Hit] = []
+def _hits_from(res: dict) -> list[Hit]:
+    out: list[Hit] = []
     for h in res.get("hits", []):
-        hits.append(Hit(
+        out.append(Hit(
             chunk_id=str(h.get("chunk_id", "")),
             doc_id=str(h.get("doc_id", "")),
             text=h.get("text") or "",
@@ -125,4 +119,48 @@ def search(q: str, top_k: int, filters: SearchFilters) -> list[Hit]:
             url=h.get("url"),
             pdf_url=h.get("pdf_url"),
         ))
-    return hits
+    return out
+
+
+def _search_one(q: str, limit: int, expr: Optional[str]) -> list[Hit]:
+    params: dict = {"limit": limit}
+    if expr:
+        params["filter"] = expr
+    return _hits_from(_client().index(settings.meili_index).search(q, params))
+
+
+def search(q: str, top_k: int, filters: SearchFilters) -> list[Hit]:
+    # Filtre de type explicite (jurisprudence|law|projet_loi) → on le respecte tel quel.
+    if filters.source_type:
+        return _search_one(q, top_k, _filter_expr(filters))
+
+    # Sinon : recherche FÉDÉRÉE. Le corpus est ~92 % jurisprudence ; une recherche
+    # simple ne remonte jamais de textes de loi. On interroge jurisprudence et lois
+    # séparément, puis on entrelace (2 jurisprudence : 1 loi) pour GARANTIR la présence
+    # des textes dans le contexte envoyé au modèle. Les projets de loi (non en vigueur)
+    # ne sont inclus que sur filtre explicite.
+    def sub(st: str) -> list[Hit]:
+        f = SearchFilters(year_min=filters.year_min, year_max=filters.year_max,
+                          juridiction_key=filters.juridiction_key, source_type=st)
+        return _search_one(q, top_k, _filter_expr(f))
+
+    juris, laws = sub("jurisprudence"), sub("law")
+    ordered: list[Hit] = []
+    ji = li = 0
+    while ji < len(juris) or li < len(laws):
+        for _ in range(2):
+            if ji < len(juris):
+                ordered.append(juris[ji]); ji += 1
+        if li < len(laws):
+            ordered.append(laws[li]); li += 1
+
+    merged: list[Hit] = []
+    seen: set = set()
+    for h in ordered:
+        if h.chunk_id in seen:
+            continue
+        seen.add(h.chunk_id)
+        merged.append(h)
+        if len(merged) >= top_k:
+            break
+    return merged

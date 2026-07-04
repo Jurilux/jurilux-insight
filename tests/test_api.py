@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import app.main as m
 from app import db, rag, search
 from app.main import app
+from app.schemas import SearchFilters
 from app.search import Hit
 
 client = TestClient(app)
@@ -147,6 +148,19 @@ def test_metrics_endpoint(monkeypatch):
     b = client.get("/api/metrics").json()
     assert {"uptime_s", "ask_total", "ask_refused", "refusal_rate"} <= set(b)
     assert b["ask_total"] >= 1
+
+
+def test_search_federated_includes_law(monkeypatch):
+    def fake(q, limit, expr):
+        st = 'law' if (expr and 'law' in expr) else 'jurisprudence'
+        return [Hit(chunk_id=f"{st}{i}", doc_id=f"{st}-{i}", text="x", source_type=st)
+                for i in range(limit)]
+    monkeypatch.setattr(search, "_search_one", fake)
+    types = [h.source_type for h in search.search("q", 12, SearchFilters())]
+    assert 'law' in types and 'jurisprudence' in types  # les deux présents
+    assert types.count('law') >= 3                       # textes garantis dans le contexte
+    # filtre explicite → recherche simple (respecte le type demandé)
+    assert search.search("q", 12, SearchFilters(source_type='law'))
 
 
 def test_auth_flow(temp_db):
