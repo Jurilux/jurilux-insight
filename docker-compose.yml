@@ -45,6 +45,8 @@ services:
       # 0.5 activé le 2026-07-04 : embedder OpenAI sur lois+projets (~109k chunks)
       # => les textes de loi sont enfin retrouvés malgré le fossé de vocabulaire.
       HYBRID_SEMANTIC_RATIO: ${HYBRID_SEMANTIC_RATIO:-0.0}
+      # Backoffice : emails admin (séparés par des virgules) — amorce le 1er admin.
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       DB_PATH: /var/lib/jurilux/jurilux.db
     volumes:
       - app_data:/var/lib/jurilux   # base SQLite (comptes, historique) — persistant

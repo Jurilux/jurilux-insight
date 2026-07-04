@@ -61,16 +61,16 @@ def create_user(email: str, password: str) -> dict:
                 (email, hash_password(password), _iso(_now())))
         except sqlite3.IntegrityError:
             raise ValueError("email déjà utilisé")
-        return {"id": cur.lastrowid, "email": email, "plan": "student"}
+        return {"id": cur.lastrowid, "email": email, "plan": "student", "is_admin": 0}
 
 
 def authenticate(email: str, password: str) -> Optional[dict]:
     email = email.strip().lower()
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email, password_hash, plan FROM users WHERE email = ?", (email,)).fetchone()
+            "SELECT id, email, password_hash, plan, is_admin FROM users WHERE email = ?", (email,)).fetchone()
     if row and verify_password(password, row["password_hash"]):
-        return {"id": row["id"], "email": row["email"], "plan": row["plan"]}
+        return {"id": row["id"], "email": row["email"], "plan": row["plan"], "is_admin": row["is_admin"]}
     return None
 
 
@@ -95,14 +95,14 @@ def user_for_token(token: Optional[str]) -> Optional[dict]:
         return None
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT s.expires_at, u.id, u.email, u.plan FROM sessions s "
+            "SELECT s.expires_at, u.id, u.email, u.plan, u.is_admin FROM sessions s "
             "JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
             (_token_hash(token),)).fetchone()
     if not row:
         return None
     if datetime.datetime.fromisoformat(row["expires_at"]) < _now():
         return None
-    return {"id": row["id"], "email": row["email"], "plan": row["plan"]}
+    return {"id": row["id"], "email": row["email"], "plan": row["plan"], "is_admin": row["is_admin"]}
 
 
 def delete_session(token: Optional[str]) -> None:

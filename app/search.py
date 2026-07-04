@@ -105,6 +105,23 @@ def corpus_overview() -> dict:
     return data
 
 
+def index_stats() -> dict:
+    """État de l'index Meili (lecture seule) pour le backoffice : nombre de documents
+    et si une indexation est en cours. Ne déclenche aucune écriture."""
+    data = {"documents": None, "is_indexing": None}
+    try:
+        stats = _client().index(settings.meili_index).get_stats()
+        # Le client Meili renvoie un objet ou un dict selon la version : on gère les deux.
+        data["documents"] = getattr(stats, "number_of_documents", None)
+        data["is_indexing"] = getattr(stats, "is_indexing", None)
+        if data["documents"] is None and isinstance(stats, dict):
+            data["documents"] = stats.get("numberOfDocuments")
+            data["is_indexing"] = stats.get("isIndexing")
+    except Exception:
+        pass
+    return data
+
+
 def _hits_from(res: dict) -> list[Hit]:
     out: list[Hit] = []
     for h in res.get("hits", []):

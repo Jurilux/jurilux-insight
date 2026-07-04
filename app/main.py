@@ -14,7 +14,7 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import auth, db, metrics, rag, search
+from . import admin, auth, db, metrics, rag, search
 from .config import settings
 from .schemas import AskRequest, AskResponse
 
@@ -102,6 +102,19 @@ def _require_user(authorization: Optional[str]) -> dict:
     return user
 
 
+def _is_admin(user: dict) -> bool:
+    """Admin = flag is_admin en base OU email présent dans l'allowlist ADMIN_EMAILS."""
+    return bool(user.get("is_admin")) or (
+        (user.get("email") or "").lower() in settings.admin_email_set)
+
+
+def _require_admin(authorization: Optional[str]) -> dict:
+    user = _require_user(authorization)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
+    return user
+
+
 @app.post("/api/auth/register")
 def register(creds: Credentials) -> dict:
     try:
@@ -128,7 +141,8 @@ def logout(authorization: Optional[str] = Header(None)) -> dict:
 @app.get("/api/me")
 def me(authorization: Optional[str] = Header(None)) -> dict:
     user = _require_user(authorization)
-    return {"user": {"email": user["email"], "plan": user.get("plan", "student")},
+    return {"user": {"email": user["email"], "plan": user.get("plan", "student"),
+                     "is_admin": _is_admin(user)},
             "quota": auth.quota_info(user)}
 
 
@@ -136,6 +150,80 @@ def me(authorization: Optional[str] = Header(None)) -> dict:
 def history(authorization: Optional[str] = Header(None)) -> dict:
     user = _require_user(authorization)
     return {"items": auth.list_history(user["id"])}
+
+
+# ---------- Backoffice admin ----------
+class PlanUpdate(BaseModel):
+    plan: str
+
+
+class AdminUpdate(BaseModel):
+    is_admin: bool
+
+
+@app.get("/api/admin/overview")
+def admin_overview(authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    return {
+        "metrics": metrics.snapshot(),
+        "corpus": search.corpus_overview(),
+        "index": search.index_stats(),
+        "health": {"meilisearch": search.meili_healthy(),
+                   "llm_configured": bool(settings.anthropic_api_key)},
+        "users": admin.user_stats(),
+        "questions": admin.question_stats(),
+        "prompt_version": settings.prompt_version,
+        "model": settings.anthropic_model,
+        "hybrid_semantic_ratio": settings.hybrid_semantic_ratio,
+    }
+
+
+@app.get("/api/admin/users")
+def admin_list_users(authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    return {"items": admin.list_users()}
+
+
+@app.post("/api/admin/users/{user_id}/plan")
+def admin_set_plan(user_id: int, body: PlanUpdate,
+                   authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    if body.plan not in ("student", "pro"):
+        raise HTTPException(status_code=400, detail="plan invalide (student|pro)")
+    if not admin.set_user_plan(user_id, body.plan):
+        raise HTTPException(status_code=404, detail="utilisateur introuvable")
+    return {"ok": True}
+
+
+@app.post("/api/admin/users/{user_id}/admin")
+def admin_set_admin(user_id: int, body: AdminUpdate,
+                    authorization: Optional[str] = Header(None)) -> dict:
+    me_admin = _require_admin(authorization)
+    if user_id == me_admin["id"] and not body.is_admin:
+        raise HTTPException(status_code=400,
+                            detail="Vous ne pouvez pas retirer vos propres droits admin")
+    if not admin.set_user_admin(user_id, body.is_admin):
+        raise HTTPException(status_code=404, detail="utilisateur introuvable")
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(user_id: int,
+                      authorization: Optional[str] = Header(None)) -> dict:
+    me_admin = _require_admin(authorization)
+    if user_id == me_admin["id"]:
+        raise HTTPException(status_code=400,
+                            detail="Vous ne pouvez pas supprimer votre propre compte")
+    if not admin.delete_user(user_id):
+        raise HTTPException(status_code=404, detail="utilisateur introuvable")
+    return {"ok": True}
+
+
+@app.get("/api/admin/questions")
+def admin_questions(limit: int = 100,
+                    authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    return {"items": admin.recent_questions(min(max(limit, 1), 500))}
 
 
 @app.post("/api/ask", response_model=AskResponse, response_model_exclude_none=False)

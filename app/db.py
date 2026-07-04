@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
     email         TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     plan          TEXT NOT NULL DEFAULT 'student',
+    is_admin      INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -49,8 +50,12 @@ def init_db() -> None:
         os.makedirs(d, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
-        # migration : ajouter `plan` si la table users préexiste sans cette colonne
-        try:
-            conn.execute("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'student'")
-        except sqlite3.OperationalError:
-            pass  # colonne déjà présente
+        # migrations : ajouter les colonnes si la table users préexiste sans elles
+        for ddl in (
+            "ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'student'",
+            "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass  # colonne déjà présente
