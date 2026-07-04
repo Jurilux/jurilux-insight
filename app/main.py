@@ -14,9 +14,9 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from . import admin, auth, db, feedback as fb_store, metrics, rag, search
+from . import admin, auth, db, feedback as fb_store, metrics, rag, search, share as share_store
 from .config import settings
-from .schemas import AskRequest, AskResponse, FeedbackIn, SearchFilters
+from .schemas import AskRequest, AskResponse, FeedbackIn, SearchFilters, ShareIn
 
 log = logging.getLogger("jurilux")
 logging.basicConfig(level=logging.INFO)
@@ -167,6 +167,24 @@ def submit_feedback(body: FeedbackIn,
     except Exception:
         log.exception("écriture feedback")
     return {"ok": True}
+
+
+@app.post("/api/share")
+def create_share(body: ShareIn, authorization: Optional[str] = Header(None)) -> dict:
+    """Crée un permalien partageable pour une réponse (instantané). Ouvert aux anonymes."""
+    user = _current_user(authorization)
+    cites = [c for c in body.citations if isinstance(c, dict)]
+    token = share_store.create(user["id"] if user else None, body.question,
+                               body.answer, cites, body.status)
+    return {"id": token}
+
+
+@app.get("/api/share/{share_id}")
+def read_share(share_id: str) -> dict:
+    data = share_store.get(share_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Lien introuvable")
+    return data
 
 
 @app.get("/api/me")

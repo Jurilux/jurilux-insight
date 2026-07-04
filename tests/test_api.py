@@ -257,6 +257,26 @@ def test_change_password(temp_db):
     assert client.post("/api/auth/login", json={"email": "pw@b.com", "password": "nouveaumdp1"}).status_code == 200
 
 
+def test_share_roundtrip(temp_db):
+    payload = {"question": "Quel préavis pour un CDD ?",
+               "answer": "Le préavis dépend de... [doc]",
+               "citations": [{"doc_id": "csj_x", "source_type": "jurisprudence"}],
+               "status": "partial"}
+    r = client.post("/api/share", json=payload)   # anonyme OK
+    assert r.status_code == 200
+    sid = r.json()["id"]
+    assert sid
+    got = client.get(f"/api/share/{sid}")
+    assert got.status_code == 200
+    b = got.json()
+    assert b["question"] == payload["question"]
+    assert b["answer"] == payload["answer"]
+    assert b["citations"][0]["doc_id"] == "csj_x"
+    assert b["status"] == "partial"
+    # lien inconnu -> 404
+    assert client.get("/api/share/inexistant").status_code == 404
+
+
 def test_filter_expression():
     from app.schemas import SearchFilters
     from app.search import _filter_expr

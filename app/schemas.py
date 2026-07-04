@@ -54,3 +54,10 @@ class FeedbackIn(BaseModel):
     helpful: bool
     missing: Optional[str] = None       # ce qui manquait (si 👎)
     status: Optional[str] = None        # statut de la réponse notée (ok|partial|refused)
+
+
+class ShareIn(BaseModel):
+    question: str = Field(min_length=1)
+    answer: Optional[str] = None
+    citations: list = Field(default_factory=list)  # instantané des citations (dicts)
+    status: Optional[str] = None
