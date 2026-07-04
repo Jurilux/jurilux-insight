@@ -179,6 +179,22 @@ def test_history_saved_when_authenticated(temp_db, monkeypatch):
     assert client.get("/api/history").status_code == 401
 
 
+def test_student_quota(temp_db, monkeypatch):
+    monkeypatch.setattr(m.settings, "student_monthly_quota", 2)
+    monkeypatch.setattr(search, "search", lambda q, k, f: [])
+    tok = client.post("/api/auth/register",
+                      json={"email": "q@b.com", "password": "password123"}).json()["token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    for i in range(2):  # 2 questions passent (plan étudiant, quota=2)
+        b = client.post("/api/ask", json={"q": f"q{i}"}, headers=h).json()
+        assert "Quota mensuel" not in (b["feedback"]["why"] or "")
+    b = client.post("/api/ask", json={"q": "q3"}, headers=h).json()  # 3e refusée
+    assert "Quota mensuel" in b["feedback"]["why"]
+    me = client.get("/api/me", headers=h).json()
+    assert me["quota"]["limit"] == 2 and me["user"]["plan"] == "student"
+    assert me["quota"]["remaining"] == 0
+
+
 def test_filter_expression():
     from app.schemas import SearchFilters
     from app.search import _filter_expr

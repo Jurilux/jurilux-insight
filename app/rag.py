@@ -38,6 +38,12 @@ Tu réponds EXCLUSIVEMENT avec un objet JSON valide, sans texte autour, au forma
 }
 "status": "ok" si les extraits couvrent bien la question, "partial" s'ils ne la couvrent que partiellement."""
 
+PEDAGOGICAL_SUFFIX = """
+
+MODE PÉDAGOGIQUE (étudiant) : structure la réponse de façon didactique en trois temps —
+1) le principe juridique en jeu, 2) le texte applicable, 3) son application par la
+jurisprudence. Définis les termes techniques et explique le raisonnement, sans jargon inutile."""
+
 
 def _context_block(hits: list[Hit]) -> str:
     parts = []
@@ -84,7 +90,7 @@ def refusal(why: str) -> AskResponse:
     )
 
 
-def answer(q: str, hits: list[Hit], temperature: float) -> AskResponse:
+def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = False) -> AskResponse:
     if not hits:
         return refusal(
             "Aucun document pertinent trouvé dans le corpus pour cette question "
@@ -96,7 +102,7 @@ def answer(q: str, hits: list[Hit], temperature: float) -> AskResponse:
         model=settings.anthropic_model,
         max_tokens=settings.anthropic_max_tokens,
         temperature=temperature,
-        system=SYSTEM_PROMPT,
+        system=SYSTEM_PROMPT + (PEDAGOGICAL_SUFFIX if pedagogical else ""),
         messages=[{
             "role": "user",
             "content": f"Extraits du corpus :\n\n{_context_block(hits)}\n\nQuestion : {q}",

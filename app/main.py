@@ -127,7 +127,9 @@ def logout(authorization: Optional[str] = Header(None)) -> dict:
 
 @app.get("/api/me")
 def me(authorization: Optional[str] = Header(None)) -> dict:
-    return {"user": _require_user(authorization)}
+    user = _require_user(authorization)
+    return {"user": {"email": user["email"], "plan": user.get("plan", "student")},
+            "quota": auth.quota_info(user)}
 
 
 @app.get("/api/history")
@@ -151,6 +153,19 @@ def ask(req: AskRequest, request: Request,
             "Trop de requêtes en peu de temps. Patientez un instant avant de réessayer."
         )
 
+    user = _current_user(authorization)
+
+    # Quota mensuel du plan étudiant (freemium)
+    if user:
+        qi = auth.quota_info(user)
+        if qi["remaining"] is not None and qi["remaining"] <= 0:
+            metrics.incr("ask_refused")
+            metrics.record_latency_ms((time.time() - t0) * 1000)
+            return rag.refusal(
+                f"Quota mensuel atteint ({qi['limit']} questions/mois, plan étudiant). "
+                "Il se réinitialise le 1er du mois — ou passez au plan pro."
+            )
+
     try:
         hits = search.search(req.q, req.topK, req.filters)
     except Exception:
@@ -159,7 +174,7 @@ def ask(req: AskRequest, request: Request,
         resp = rag.refusal("Le moteur de recherche est momentanément indisponible. Réessayez dans un instant.")
     else:
         try:
-            resp = rag.answer(req.q, hits, req.temperature)
+            resp = rag.answer(req.q, hits, req.temperature, pedagogical=req.pedagogical)
         except Exception:
             log.exception("Erreur LLM")
             metrics.incr("ask_errors")
@@ -170,7 +185,6 @@ def ask(req: AskRequest, request: Request,
     metrics.record_latency_ms((time.time() - t0) * 1000)
 
     # Historique si connecté (best effort, ne casse jamais la réponse)
-    user = _current_user(authorization)
     if user:
         try:
             auth.add_history(user["id"], req.q, getattr(resp, "answer", None),

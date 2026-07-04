@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     email         TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
+    plan          TEXT NOT NULL DEFAULT 'student',
     created_at    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -48,3 +49,8 @@ def init_db() -> None:
         os.makedirs(d, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        # migration : ajouter `plan` si la table users préexiste sans cette colonne
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'student'")
+        except sqlite3.OperationalError:
+            pass  # colonne déjà présente

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # Espace utilisateur (SQLite)
     db_path: str = "/var/lib/jurilux/jurilux.db"  # volume persistant (docker-compose)
     session_days: int = 30
+    student_monthly_quota: int = 30  # questions/mois pour le plan étudiant (freemium)
 
 
 settings = Settings()

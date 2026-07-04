@@ -61,16 +61,16 @@ def create_user(email: str, password: str) -> dict:
                 (email, hash_password(password), _iso(_now())))
         except sqlite3.IntegrityError:
             raise ValueError("email déjà utilisé")
-        return {"id": cur.lastrowid, "email": email}
+        return {"id": cur.lastrowid, "email": email, "plan": "student"}
 
 
 def authenticate(email: str, password: str) -> Optional[dict]:
     email = email.strip().lower()
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email, password_hash FROM users WHERE email = ?", (email,)).fetchone()
+            "SELECT id, email, password_hash, plan FROM users WHERE email = ?", (email,)).fetchone()
     if row and verify_password(password, row["password_hash"]):
-        return {"id": row["id"], "email": row["email"]}
+        return {"id": row["id"], "email": row["email"], "plan": row["plan"]}
     return None
 
 
@@ -95,14 +95,14 @@ def user_for_token(token: Optional[str]) -> Optional[dict]:
         return None
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT s.expires_at, u.id, u.email FROM sessions s "
+            "SELECT s.expires_at, u.id, u.email, u.plan FROM sessions s "
             "JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
             (_token_hash(token),)).fetchone()
     if not row:
         return None
     if datetime.datetime.fromisoformat(row["expires_at"]) < _now():
         return None
-    return {"id": row["id"], "email": row["email"]}
+    return {"id": row["id"], "email": row["email"], "plan": row["plan"]}
 
 
 def delete_session(token: Optional[str]) -> None:
@@ -132,3 +132,26 @@ def token_from_header(authorization: Optional[str]) -> Optional[str]:
     if authorization and authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
     return None
+
+
+# ---------- quota (plan étudiant, freemium) ----------
+def _month_start_iso() -> str:
+    now = _now()
+    return _iso(now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
+
+
+def monthly_usage(user_id: int) -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM history WHERE user_id = ? AND created_at >= ?",
+            (user_id, _month_start_iso())).fetchone()
+    return row["n"]
+
+
+def quota_info(user: dict) -> dict:
+    """limit=None => illimité (plan pro). Le quota étudiant se réinitialise chaque mois."""
+    plan = user.get("plan", "student")
+    limit = settings.student_monthly_quota if plan == "student" else None
+    used = monthly_usage(user["id"])
+    remaining = None if limit is None else max(0, limit - used)
+    return {"plan": plan, "limit": limit, "used": used, "remaining": remaining}
