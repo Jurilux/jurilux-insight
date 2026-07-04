@@ -7,3 +7,4 @@ pydantic-settings==2.14.2
 meilisearch==0.42.0
 anthropic==0.116.0
 pypdf==6.14.2
+cryptography>=43,<46   # déchiffrement des PDF Legilux protégés (AES) pour pypdf

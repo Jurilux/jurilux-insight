@@ -71,8 +71,8 @@ def corpus_overview() -> dict:
     """Périmètre du corpus : nb de décisions/textes (index corpus_meta, maj à
     l'ingestion) + total de chunks et année la plus récente (facettes Meili)."""
     client = _client()
-    data: dict = {"decisions": None, "texts": None, "updated": None,
-                  "chunks": None, "latest_year": None}
+    data: dict = {"decisions": None, "texts": None, "projets": None, "updated": None,
+                  "chunks": None, "latest_year": None, "by_source": None}
     try:
         res = client.index(CORPUS_META_INDEX).search("", {"limit": 1})
         hits = res.get("hits") or []
@@ -80,6 +80,7 @@ def corpus_overview() -> dict:
             m = hits[0]
             data["decisions"] = m.get("decisions")
             data["texts"] = m.get("texts")
+            data["projets"] = m.get("projets")
             data["updated"] = m.get("updated")
     except Exception:
         pass
@@ -88,6 +89,7 @@ def corpus_overview() -> dict:
             "", {"limit": 0, "facets": ["source_type", "year"]})
         fd = res.get("facetDistribution") or {}
         by_source = fd.get("source_type") or {}
+        data["by_source"] = by_source or None
         # Somme exacte des facettes (estimatedTotalHits est plafonné par Meili).
         data["chunks"] = sum(by_source.values()) or res.get("estimatedTotalHits") or None
         # Année la plus récente, en ignorant les valeurs parasites (> année courante).
