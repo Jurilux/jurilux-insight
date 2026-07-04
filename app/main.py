@@ -7,8 +7,10 @@ Endpoints :
   POST /api/ask  — RAG : Meilisearch -> Claude -> AskResponse.
 """
 import logging
+import time
+from collections import defaultdict, deque
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 
 from . import rag, search
 from .config import settings
@@ -18,6 +20,32 @@ log = logging.getLogger("jurilux")
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Jurilux API", version="1.0.0")
+
+# Rate-limit /api/ask par IP (fenêtre glissante 60 s, en mémoire process).
+# Chaque appel consomme un crédit LLM → garde-fou anti-abus/coût sur endpoint public.
+_RL_WINDOW = 60.0
+_rl_hits: "defaultdict[str, deque]" = defaultdict(deque)
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_ok(ip: str) -> bool:
+    limit = settings.rate_limit_per_min
+    if limit <= 0:
+        return True
+    now = time.time()
+    dq = _rl_hits[ip]
+    while dq and dq[0] <= now - _RL_WINDOW:
+        dq.popleft()
+    if len(dq) >= limit:
+        return False
+    dq.append(now)
+    return True
 
 
 @app.get("/health")
@@ -35,8 +63,18 @@ def health(response: Response) -> dict:
     }
 
 
+@app.get("/api/corpus")
+def corpus() -> dict:
+    """Périmètre du corpus, pour affichage front (« X décisions · Y textes · à jour »)."""
+    return search.corpus_overview()
+
+
 @app.post("/api/ask", response_model=AskResponse, response_model_exclude_none=False)
-def ask(req: AskRequest) -> AskResponse:
+def ask(req: AskRequest, request: Request) -> AskResponse:
+    if not _rate_ok(_client_ip(request)):
+        return rag.refusal(
+            "Trop de requêtes en peu de temps. Patientez un instant avant de réessayer."
+        )
     try:
         hits = search.search(req.q, req.topK, req.filters)
     except Exception:

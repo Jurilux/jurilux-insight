@@ -107,6 +107,30 @@ def test_ask_invalid_llm_json_degrades_to_partial(monkeypatch):
     assert body["answer"] == "réponse libre sans JSON"
 
 
+def test_ask_rate_limited(monkeypatch):
+    import app.main as m
+    m._rl_hits.clear()
+    monkeypatch.setattr(m.settings, "rate_limit_per_min", 3)
+    monkeypatch.setattr(search, "search", lambda q, k, f: [])  # refus "hors corpus"
+    for _ in range(3):
+        body = client.post("/api/ask", json={"q": "x"}).json()
+        assert "Trop de requêtes" not in (body["feedback"]["why"] or "")
+    # la requête au-delà du quota est refusée gracieusement (contrat AskResponse préservé)
+    body = client.post("/api/ask", json={"q": "x"}).json()
+    assert body["refused"] is True
+    assert "Trop de requêtes" in body["feedback"]["why"]
+    m._rl_hits.clear()
+
+
+def test_corpus_overview(monkeypatch):
+    monkeypatch.setattr(search, "corpus_overview", lambda: {
+        "decisions": 49570, "texts": 10, "updated": "2026-07",
+        "chunks": 1236634, "latest_year": 2026,
+    })
+    b = client.get("/api/corpus").json()
+    assert b["decisions"] == 49570 and b["texts"] == 10 and b["latest_year"] == 2026
+
+
 def test_filter_expression():
     from app.schemas import SearchFilters
     from app.search import _filter_expr

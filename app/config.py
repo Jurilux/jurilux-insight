@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     prompt_version: str = "rebuild-2026-07-v1"
     max_context_chunks: int = 12  # chunks max injectés dans le prompt
     snippet_len: int = 400
+    rate_limit_per_min: int = 20  # requêtes /api/ask par IP et par minute (0 = illimité)
 
     host: str = "127.0.0.1"
     port: int = 8088

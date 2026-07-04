@@ -63,6 +63,38 @@ def _filter_expr(f: SearchFilters) -> Optional[str]:
     return " AND ".join(parts) or None
 
 
+CORPUS_META_INDEX = "corpus_meta"  # 1 doc (id=1) : compteurs au niveau document + fraîcheur
+
+
+def corpus_overview() -> dict:
+    """Périmètre du corpus : nb de décisions/textes (index corpus_meta, maj à
+    l'ingestion) + total de chunks et année la plus récente (facettes Meili)."""
+    client = _client()
+    data: dict = {"decisions": None, "texts": None, "updated": None,
+                  "chunks": None, "latest_year": None}
+    try:
+        res = client.index(CORPUS_META_INDEX).search("", {"limit": 1})
+        hits = res.get("hits") or []
+        if hits:
+            m = hits[0]
+            data["decisions"] = m.get("decisions")
+            data["texts"] = m.get("texts")
+            data["updated"] = m.get("updated")
+    except Exception:
+        pass
+    try:
+        res = client.index(settings.meili_index).search(
+            "", {"limit": 0, "facets": ["source_type", "year"]})
+        fd = res.get("facetDistribution") or {}
+        by_source = fd.get("source_type") or {}
+        data["chunks"] = res.get("estimatedTotalHits") or (sum(by_source.values()) or None)
+        years = [int(y) for y in (fd.get("year") or {}) if str(y).isdigit()]
+        data["latest_year"] = max(years) if years else None
+    except Exception:
+        pass
+    return data
+
+
 def search(q: str, top_k: int, filters: SearchFilters) -> list[Hit]:
     idx = _client().index(settings.meili_index)
     params: dict = {"limit": top_k}
