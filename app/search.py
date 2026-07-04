@@ -5,6 +5,7 @@ Index `chunks` — un document par chunk :
   source_type ('jurisprudence'|'law'), url, pdf_url
 Filterable : year, juridiction_key, source_type. Searchable : text, title.
 """
+import datetime
 from dataclasses import dataclass
 from typing import Optional
 
@@ -87,8 +88,12 @@ def corpus_overview() -> dict:
             "", {"limit": 0, "facets": ["source_type", "year"]})
         fd = res.get("facetDistribution") or {}
         by_source = fd.get("source_type") or {}
-        data["chunks"] = res.get("estimatedTotalHits") or (sum(by_source.values()) or None)
+        # Somme exacte des facettes (estimatedTotalHits est plafonné par Meili).
+        data["chunks"] = sum(by_source.values()) or res.get("estimatedTotalHits") or None
+        # Année la plus récente, en ignorant les valeurs parasites (> année courante).
+        cur = datetime.date.today().year
         years = [int(y) for y in (fd.get("year") or {}) if str(y).isdigit()]
+        years = [y for y in years if 1900 <= y <= cur]
         data["latest_year"] = max(years) if years else None
     except Exception:
         pass
