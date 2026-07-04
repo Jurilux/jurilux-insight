@@ -9,10 +9,12 @@ Endpoints :
 import logging
 import time
 from collections import defaultdict, deque
+from typing import Optional
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from pydantic import BaseModel
 
-from . import metrics, rag, search
+from . import auth, db, metrics, rag, search
 from .config import settings
 from .schemas import AskRequest, AskResponse
 
@@ -20,6 +22,14 @@ log = logging.getLogger("jurilux")
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Jurilux API", version="1.0.0")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    try:
+        db.init_db()
+    except Exception:
+        log.exception("init DB (espace utilisateur) a échoué")
 
 # Rate-limit /api/ask par IP (fenêtre glissante 60 s, en mémoire process).
 # Chaque appel consomme un crédit LLM → garde-fou anti-abus/coût sur endpoint public.
@@ -75,8 +85,60 @@ def get_metrics() -> dict:
     return metrics.snapshot()
 
 
+# ---------- Espace utilisateur ----------
+class Credentials(BaseModel):
+    email: str
+    password: str
+
+
+def _current_user(authorization: Optional[str]) -> Optional[dict]:
+    return auth.user_for_token(auth.token_from_header(authorization))
+
+
+def _require_user(authorization: Optional[str]) -> dict:
+    user = _current_user(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentification requise")
+    return user
+
+
+@app.post("/api/auth/register")
+def register(creds: Credentials) -> dict:
+    try:
+        user = auth.create_user(creds.email, creds.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"token": auth.create_session(user["id"]), "user": {"email": user["email"]}}
+
+
+@app.post("/api/auth/login")
+def login(creds: Credentials) -> dict:
+    user = auth.authenticate(creds.email, creds.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+    return {"token": auth.create_session(user["id"]), "user": {"email": user["email"]}}
+
+
+@app.post("/api/auth/logout")
+def logout(authorization: Optional[str] = Header(None)) -> dict:
+    auth.delete_session(auth.token_from_header(authorization))
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me(authorization: Optional[str] = Header(None)) -> dict:
+    return {"user": _require_user(authorization)}
+
+
+@app.get("/api/history")
+def history(authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    return {"items": auth.list_history(user["id"])}
+
+
 @app.post("/api/ask", response_model=AskResponse, response_model_exclude_none=False)
-def ask(req: AskRequest, request: Request) -> AskResponse:
+def ask(req: AskRequest, request: Request,
+        authorization: Optional[str] = Header(None)) -> AskResponse:
     t0 = time.time()
     metrics.mark_ask()
     metrics.incr("ask_total")
@@ -106,6 +168,15 @@ def ask(req: AskRequest, request: Request) -> AskResponse:
     if getattr(resp, "refused", False):
         metrics.incr("ask_refused")
     metrics.record_latency_ms((time.time() - t0) * 1000)
+
+    # Historique si connecté (best effort, ne casse jamais la réponse)
+    user = _current_user(authorization)
+    if user:
+        try:
+            auth.add_history(user["id"], req.q, getattr(resp, "answer", None),
+                             getattr(resp, "status", None))
+        except Exception:
+            log.exception("écriture historique")
     return resp
 
 

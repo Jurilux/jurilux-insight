@@ -24,5 +24,9 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8088
 
+    # Espace utilisateur (SQLite)
+    db_path: str = "/var/lib/jurilux/jurilux.db"  # volume persistant (docker-compose)
+    session_days: int = 30
+
 
 settings = Settings()

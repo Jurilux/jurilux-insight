@@ -28,9 +28,13 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?définir ANTHROPIC_API_KEY dans .env}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5}
       PROMPT_VERSION: ${PROMPT_VERSION:-rebuild-2026-07-v1}
+      DB_PATH: /var/lib/jurilux/jurilux.db
+    volumes:
+      - app_data:/var/lib/jurilux   # base SQLite (comptes, historique) — persistant
     depends_on:
       meilisearch:
         condition: service_healthy
 
 volumes:
   meili_data:
+  app_data:

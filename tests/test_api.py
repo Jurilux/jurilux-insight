@@ -2,13 +2,23 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
-from app import rag, search
+import app.main as m
+from app import db, rag, search
 from app.main import app
 from app.search import Hit
 
 client = TestClient(app)
+
+
+@pytest.fixture
+def temp_db(tmp_path, monkeypatch):
+    """Base SQLite jetable pour les tests d'espace utilisateur."""
+    monkeypatch.setattr(m.settings, "db_path", str(tmp_path / "test.db"))
+    db.init_db()
+    yield
 
 HITS = [
     Hit(chunk_id="c1", doc_id="csj_ch08_2019_demo1", text="La faute grave...",
@@ -137,6 +147,36 @@ def test_metrics_endpoint(monkeypatch):
     b = client.get("/api/metrics").json()
     assert {"uptime_s", "ask_total", "ask_refused", "refusal_rate"} <= set(b)
     assert b["ask_total"] >= 1
+
+
+def test_auth_flow(temp_db):
+    r = client.post("/api/auth/register", json={"email": "A@B.com", "password": "password123"})
+    assert r.status_code == 200
+    tok = r.json()["token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    assert client.get("/api/me", headers=h).json()["user"]["email"] == "a@b.com"  # normalisé
+    assert client.get("/api/me").status_code == 401  # sans token
+    # doublon + mot de passe court
+    assert client.post("/api/auth/register", json={"email": "a@b.com", "password": "password123"}).status_code == 400
+    assert client.post("/api/auth/register", json={"email": "c@d.com", "password": "court"}).status_code == 400
+    # login ok / ko
+    assert client.post("/api/auth/login", json={"email": "a@b.com", "password": "password123"}).status_code == 200
+    assert client.post("/api/auth/login", json={"email": "a@b.com", "password": "nope"}).status_code == 401
+    # logout invalide le token
+    client.post("/api/auth/logout", headers=h)
+    assert client.get("/api/me", headers=h).status_code == 401
+
+
+def test_history_saved_when_authenticated(temp_db, monkeypatch):
+    monkeypatch.setattr(search, "search", lambda q, k, f: [])
+    tok = client.post("/api/auth/register",
+                      json={"email": "h@b.com", "password": "password123"}).json()["token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    client.post("/api/ask", json={"q": "ma question test"}, headers=h)
+    items = client.get("/api/history", headers=h).json()["items"]
+    assert len(items) == 1 and items[0]["question"] == "ma question test"
+    # anonyme : pas d'historique requis, /api/history exige un compte
+    assert client.get("/api/history").status_code == 401
 
 
 def test_filter_expression():
