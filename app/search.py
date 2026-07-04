@@ -126,6 +126,10 @@ def _search_one(q: str, limit: int, expr: Optional[str]) -> list[Hit]:
     params: dict = {"limit": limit}
     if expr:
         params["filter"] = expr
+    # Recherche hybride (sémantique + mots-clés) si activée (embedder Meili configuré).
+    if settings.hybrid_semantic_ratio > 0:
+        params["hybrid"] = {"embedder": "default",
+                            "semanticRatio": settings.hybrid_semantic_ratio}
     return _hits_from(_client().index(settings.meili_index).search(q, params))
 
 

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # Divers
     prompt_version: str = "rebuild-2026-07-v1"
     max_context_chunks: int = 16  # chunks max injectés dans le prompt
+    hybrid_semantic_ratio: float = 0.0  # 0 = mots-clés seuls ; >0 active la recherche hybride (sémantique)
     snippet_len: int = 400
     rate_limit_per_min: int = 20  # requêtes /api/ask par IP et par minute (0 = illimité)
 

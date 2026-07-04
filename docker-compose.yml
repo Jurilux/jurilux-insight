@@ -16,6 +16,13 @@ services:
       timeout: 5s
       retries: 5
 
+  # Embeddings locaux (recherche sémantique) — BGE-M3 via Ollama, 0 € / souverain.
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+
   api:
     build: .
     restart: unless-stopped
@@ -38,3 +45,4 @@ services:
 volumes:
   meili_data:
   app_data:
+  ollama_data:
