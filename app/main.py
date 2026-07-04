@@ -241,6 +241,41 @@ def admin_activity(days: int = 14,
     return {"per_day": admin.questions_per_day(min(max(days, 1), 60))}
 
 
+# Banc de test : 10 questions de référence couvrant les domaines principaux. Le gate
+# qualité du one-pager, version récupération (rapide, sans LLM) — valide aussi le retrieval.
+REFERENCE_QUESTIONS = [
+    "Dans quels cas un licenciement avec effet immédiat est-il justifié ?",
+    "Quel est le préavis légal en cas de licenciement au Luxembourg ?",
+    "Une absence injustifiée peut-elle constituer une faute grave ?",
+    "Un employeur peut-il imposer des heures supplémentaires ?",
+    "Quelles sont les conditions de résiliation d'un bail d'habitation ?",
+    "Le bailleur peut-il conserver la garantie locative après le départ du locataire ?",
+    "Quelle valeur probante les tribunaux reconnaissent-ils aux échanges d'emails ?",
+    "Quel est le délai pour faire appel d'un jugement civil ?",
+    "Comment est fixée la pension alimentaire pour un enfant au Luxembourg ?",
+    "Quelles sont les conséquences d'une rupture de la période d'essai ?",
+]
+
+
+@app.get("/api/admin/eval")
+def admin_eval(authorization: Optional[str] = Header(None)) -> dict:
+    """Banc de test récupération : pour chaque question de référence, ce que la recherche
+    remonte (droit / jurisprudence). Rapide (pas de LLM). Sert de gate qualité et valide
+    l'indexation."""
+    _require_admin(authorization)
+    results = []
+    for q in REFERENCE_QUESTIONS:
+        hits = search.search(q, 12, SearchFilters())
+        laws = [h.doc_id for h in hits if h.source_type == "law"]
+        juris = [h for h in hits if h.source_type == "jurisprudence"]
+        results.append({"question": q, "count": len(hits),
+                        "has_law": bool(laws), "has_juris": bool(juris), "laws": laws[:3]})
+    return {"total": len(results),
+            "with_law": sum(1 for r in results if r["has_law"]),
+            "with_juris": sum(1 for r in results if r["has_juris"]),
+            "results": results}
+
+
 class ProbeRequest(BaseModel):
     q: str = Field(min_length=1)
     topK: int = Field(default=12, ge=1, le=40)

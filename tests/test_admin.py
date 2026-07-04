@@ -107,6 +107,19 @@ def test_admin_probe(temp_db, monkeypatch):
     assert "essai" in d["hits"][0]["snippet"]
 
 
+def test_admin_eval(temp_db, monkeypatch):
+    from app.search import Hit
+    monkeypatch.setattr(m.settings, "admin_emails", "boss@b.com")
+    monkeypatch.setattr(search, "search", lambda q, k, f: [
+        Hit(chunk_id="l1", doc_id="eli-code-travail-x", text="x", source_type="law"),
+        Hit(chunk_id="j1", doc_id="csj-1", text="y", source_type="jurisprudence")])
+    tok = _register("boss@b.com")
+    d = client.get("/api/admin/eval", headers=_h(tok)).json()
+    assert d["total"] == 10 and d["with_law"] == 10 and d["with_juris"] == 10
+    assert len(d["results"]) == 10 and d["results"][0]["has_law"] is True
+    assert client.get("/api/admin/eval").status_code == 401  # anonyme
+
+
 def test_admin_activity(temp_db, monkeypatch):
     monkeypatch.setattr(m.settings, "admin_emails", "boss@b.com")
     monkeypatch.setattr(search, "search", lambda q, k, f: [])
