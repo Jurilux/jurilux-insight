@@ -61,6 +61,9 @@ def _filter_expr(f: SearchFilters) -> Optional[str]:
     if f.juridiction_key:
         key = f.juridiction_key.replace('"', "")
         parts.append(f'juridiction_key = "{key}"')
+    if f.source_type:
+        st = f.source_type.replace('"', "")
+        parts.append(f'source_type = "{st}"')
     return " AND ".join(parts) or None
 
 

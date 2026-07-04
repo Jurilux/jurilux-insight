@@ -68,7 +68,7 @@ def _extract_json(raw: str) -> Optional[dict]:
 
 def _citation_from_hit(h: Hit) -> Citation:
     snippet = h.text[: settings.snippet_len]
-    src = h.source_type if h.source_type in ("jurisprudence", "law") else None
+    src = h.source_type if h.source_type in ("jurisprudence", "law", "projet_loi") else None
     return Citation(
         doc_id=h.doc_id, url=h.url, pdf_url=h.pdf_url, year=h.year,
         juridiction_key=h.juridiction_key, content=snippet,

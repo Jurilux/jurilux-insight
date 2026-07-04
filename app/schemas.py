@@ -8,6 +8,7 @@ class SearchFilters(BaseModel):
     year_min: Optional[int] = None
     year_max: Optional[int] = None
     juridiction_key: Optional[str] = None
+    source_type: Optional[str] = None  # jurisprudence | law | projet_loi
 
 
 class AskRequest(BaseModel):
@@ -24,7 +25,7 @@ class Citation(BaseModel):
     year: Optional[int] = None
     juridiction_key: Optional[str] = None
     content: Optional[str] = None
-    source_type: Optional[Literal["jurisprudence", "law"]] = None
+    source_type: Optional[Literal["jurisprudence", "law", "projet_loi"]] = None
     title: Optional[str] = None
 
 
