@@ -12,11 +12,11 @@ from collections import defaultdict, deque
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import admin, auth, db, feedback as fb_store, metrics, rag, search
 from .config import settings
-from .schemas import AskRequest, AskResponse, FeedbackIn
+from .schemas import AskRequest, AskResponse, FeedbackIn, SearchFilters
 
 log = logging.getLogger("jurilux")
 logging.basicConfig(level=logging.INFO)
@@ -214,6 +214,32 @@ def admin_overview(authorization: Optional[str] = Header(None)) -> dict:
 def admin_feedback(authorization: Optional[str] = Header(None)) -> dict:
     _require_admin(authorization)
     return {"items": fb_store.recent(200), "stats": fb_store.stats()}
+
+
+@app.get("/api/admin/activity")
+def admin_activity(days: int = 14,
+                   authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    return {"per_day": admin.questions_per_day(min(max(days, 1), 60))}
+
+
+class ProbeRequest(BaseModel):
+    q: str = Field(min_length=1)
+    topK: int = Field(default=12, ge=1, le=40)
+    filters: SearchFilters = Field(default_factory=SearchFilters)
+
+
+@app.post("/api/admin/probe")
+def admin_probe(body: ProbeRequest,
+                authorization: Optional[str] = Header(None)) -> dict:
+    """Inspecteur de récupération : montre CE QUE la recherche remonte pour une requête
+    (sans LLM, sans logging, sans quota). Sert à diagnostiquer/valider le retrieval."""
+    _require_admin(authorization)
+    hits = search.search(body.q, body.topK, body.filters)
+    return {"count": len(hits), "hits": [
+        {"chunk_id": h.chunk_id, "doc_id": h.doc_id, "source_type": h.source_type,
+         "title": h.title, "year": h.year, "juridiction_key": h.juridiction_key,
+         "snippet": (h.text or "")[:240]} for h in hits]}
 
 
 @app.get("/api/admin/users")

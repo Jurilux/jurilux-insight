@@ -92,6 +92,31 @@ def test_admin_cannot_lock_self_out(temp_db, monkeypatch):
                        json={"is_admin": False}, headers=_h(admin_tok)).status_code == 400
 
 
+def test_admin_probe(temp_db, monkeypatch):
+    from app.search import Hit
+    monkeypatch.setattr(m.settings, "admin_emails", "boss@b.com")
+    monkeypatch.setattr(search, "search", lambda q, k, f: [
+        Hit(chunk_id="c1", doc_id="eli-etat-leg-code-travail-x", text="Période d'essai...",
+            title=None, source_type="law")])
+    tok = _register("boss@b.com")
+    assert client.post("/api/admin/probe", json={"q": "période d'essai"}).status_code == 401  # anonyme
+    d = client.post("/api/admin/probe", json={"q": "période d'essai"}, headers=_h(tok)).json()
+    assert d["count"] == 1
+    assert d["hits"][0]["doc_id"] == "eli-etat-leg-code-travail-x"
+    assert d["hits"][0]["source_type"] == "law"
+    assert "essai" in d["hits"][0]["snippet"]
+
+
+def test_admin_activity(temp_db, monkeypatch):
+    monkeypatch.setattr(m.settings, "admin_emails", "boss@b.com")
+    monkeypatch.setattr(search, "search", lambda q, k, f: [])
+    tok = _register("boss@b.com")
+    client.post("/api/ask", json={"q": "une question"}, headers=_h(tok))  # logge dans history
+    d = client.get("/api/admin/activity", headers=_h(tok)).json()
+    assert "per_day" in d
+    assert sum(x["count"] for x in d["per_day"]) >= 1
+
+
 def test_admin_questions_feed(temp_db, monkeypatch):
     monkeypatch.setattr(m.settings, "admin_emails", "boss@b.com")
     monkeypatch.setattr(search, "search", lambda q, k, f: [])  # refus "hors corpus", loggé

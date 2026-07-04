@@ -35,6 +35,17 @@ def user_stats() -> dict:
             "admins": row["admins"] or 0}
 
 
+def questions_per_day(days: int = 14) -> List[dict]:
+    """Nombre de questions loggées par jour (derniers `days` jours) — mini-graphe d'activité."""
+    since = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(days=days)).isoformat()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT substr(created_at, 1, 10) AS d, COUNT(*) AS n FROM history "
+            "WHERE created_at >= ? GROUP BY d ORDER BY d", (since,)).fetchall()
+    return [{"date": r["d"], "count": r["n"]} for r in rows]
+
+
 def question_stats() -> dict:
     """Volume de questions loggées (utilisateurs connectés) + 24 h + refus/partielles."""
     with get_conn() as conn:
