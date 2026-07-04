@@ -145,12 +145,14 @@ def search(q: str, top_k: int, filters: SearchFilters) -> list[Hit]:
         return _search_one(q, top_k, _filter_expr(f))
 
     juris, laws = sub("jurisprudence"), sub("law")
+    # Entrelacement 1:1 : le contexte contient autant de textes que de jurisprudence,
+    # pour que la loi applicable soit citable même quand elle est sur-classée par la
+    # jurisprudence (recherche par mots-clés). La pertinence fine viendra du sémantique.
     ordered: list[Hit] = []
     ji = li = 0
     while ji < len(juris) or li < len(laws):
-        for _ in range(2):
-            if ji < len(juris):
-                ordered.append(juris[ji]); ji += 1
+        if ji < len(juris):
+            ordered.append(juris[ji]); ji += 1
         if li < len(laws):
             ordered.append(laws[li]); li += 1
 
