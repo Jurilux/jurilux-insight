@@ -94,16 +94,23 @@ def test_ask_full_contract(monkeypatch):
     assert body["citations"][1]["pdf_url"].startswith("https://legilux")
 
 
-def test_ask_llm_refusal(monkeypatch):
+def test_ask_llm_refusal_keeps_pistes_and_pivot(monkeypatch):
     monkeypatch.setattr(search, "search", lambda q, k, f: HITS)
     llm = _llm_response({"answer": None, "used_doc_ids": [], "refused": True,
-                         "status": "ok", "feedback": {"why": "Hors du champ du corpus."}})
+                         "status": "ok",
+                         "suggested_question": "Quel préavis pour un CDD ?",
+                         "feedback": {"why": "Hors du champ du corpus.",
+                                      "how_to_improve": ["Préciser le type de contrat"]}})
     with patch.object(rag.anthropic, "Anthropic") as A:
         A.return_value.messages.create.return_value = llm
         r = client.post("/api/ask", json={"q": "recette de kachkéis"})
     body = r.json()
     assert body["refused"] is True
     assert body["feedback"]["why"] == "Hors du champ du corpus."
+    # Cinématique de rebond : le refus n'est PAS une impasse.
+    assert body["suggested_question"] == "Quel préavis pour un CDD ?"
+    assert len(body["citations"]) >= 1                       # pistes conservées
+    assert body["feedback"]["how_to_improve"]                # reformulations proposées
 
 
 def test_ask_invalid_llm_json_degrades_to_partial(monkeypatch):
@@ -207,6 +214,27 @@ def test_student_quota(temp_db, monkeypatch):
     me = client.get("/api/me", headers=h).json()
     assert me["quota"]["limit"] == 2 and me["user"]["plan"] == "student"
     assert me["quota"]["remaining"] == 0
+
+
+def test_feedback_stored_and_readable(temp_db, monkeypatch):
+    # anonyme peut noter (pas de compte requis)
+    assert client.post("/api/feedback",
+                       json={"question": "q1", "helpful": True}).status_code == 200
+    assert client.post("/api/feedback",
+                       json={"question": "q2", "helpful": False,
+                             "missing": "il manquait la loi applicable",
+                             "status": "refused"}).status_code == 200
+    # lecture réservée admin
+    monkeypatch.setattr(m.settings, "admin_emails", "boss@b.com")
+    tok = client.post("/api/auth/register",
+                      json={"email": "boss@b.com", "password": "password123"}).json()["token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    assert client.get("/api/admin/feedback").status_code == 401  # anonyme
+    d = client.get("/api/admin/feedback", headers=h).json()
+    assert d["stats"]["total"] == 2 and d["stats"]["helpful"] == 1
+    assert d["stats"]["satisfaction"] == 0.5
+    miss = [i for i in d["items"] if i["missing"]]
+    assert miss and miss[0]["missing"].startswith("il manquait")
 
 
 def test_change_password(temp_db):

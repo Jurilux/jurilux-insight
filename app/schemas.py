@@ -43,4 +43,14 @@ class AskResponse(BaseModel):
     refused: bool = False
     status: Optional[Literal["ok", "partial"]] = "ok"
     feedback: Optional[Feedback] = None
+    # Cinématique de rebond : question voisine que le modèle PEUT traiter avec les
+    # extraits trouvés — proposée surtout en cas de refus/partiel (pivot 1 clic).
+    suggested_question: Optional[str] = None
     prompt_version: Optional[str] = None
+
+
+class FeedbackIn(BaseModel):
+    question: str = Field(min_length=1)
+    helpful: bool
+    missing: Optional[str] = None       # ce qui manquait (si 👎)
+    status: Optional[str] = None        # statut de la réponse notée (ok|partial|refused)

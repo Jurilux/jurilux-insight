@@ -14,9 +14,9 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import admin, auth, db, metrics, rag, search
+from . import admin, auth, db, feedback as fb_store, metrics, rag, search
 from .config import settings
-from .schemas import AskRequest, AskResponse
+from .schemas import AskRequest, AskResponse, FeedbackIn
 
 log = logging.getLogger("jurilux")
 logging.basicConfig(level=logging.INFO)
@@ -155,6 +155,20 @@ def change_password(body: PasswordChange,
     return {"ok": True}
 
 
+@app.post("/api/feedback")
+def submit_feedback(body: FeedbackIn,
+                    authorization: Optional[str] = Header(None)) -> dict:
+    """Retour utilisateur (👍/👎 + ce qui manquait). Ouvert aux anonymes ; on
+    rattache au compte s'il est connecté. Best-effort, ne bloque jamais."""
+    user = _current_user(authorization)
+    try:
+        fb_store.add(user["id"] if user else None, body.question, body.helpful,
+                     body.missing, body.status, settings.prompt_version)
+    except Exception:
+        log.exception("écriture feedback")
+    return {"ok": True}
+
+
 @app.get("/api/me")
 def me(authorization: Optional[str] = Header(None)) -> dict:
     user = _require_user(authorization)
@@ -189,10 +203,17 @@ def admin_overview(authorization: Optional[str] = Header(None)) -> dict:
                    "llm_configured": bool(settings.anthropic_api_key)},
         "users": admin.user_stats(),
         "questions": admin.question_stats(),
+        "feedback": fb_store.stats(),
         "prompt_version": settings.prompt_version,
         "model": settings.anthropic_model,
         "hybrid_semantic_ratio": settings.hybrid_semantic_ratio,
     }
+
+
+@app.get("/api/admin/feedback")
+def admin_feedback(authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    return {"items": fb_store.recent(200), "stats": fb_store.stats()}
 
 
 @app.get("/api/admin/users")

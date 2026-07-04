@@ -33,14 +33,20 @@ Tu réponds EXCLUSIVEMENT avec un objet JSON valide, sans texte autour, au forma
   "used_doc_ids": ["doc_id des extraits réellement utilisés"],
   "refused": false,
   "status": "ok" | "partial",
+  "suggested_question": "une question VOISINE, plus précise ou mieux cadrée, à laquelle tu PEUX répondre avec certitude à partir des extraits fournis ; null si aucune",
   "feedback": {
-    "why": "pourquoi cette réponse / ce refus",
+    "why": "pourquoi cette réponse / ce refus, en une phrase claire et bienveillante",
     "what_we_see": ["constats tirés des extraits"],
     "limits": "limites de la réponse",
-    "how_to_improve": ["comment améliorer la question"]
+    "how_to_improve": ["2 à 3 reformulations concrètes et prêtes à l'emploi de la question, formulées avec le vocabulaire juridique adéquat"]
   }
 }
-"status": "ok" si les extraits couvrent bien la question, "partial" s'ils ne la couvrent que partiellement."""
+"status": "ok" si les extraits couvrent bien la question, "partial" s'ils ne la couvrent que partiellement.
+
+IMPORTANT — même quand tu refuses (refused=true) : ne laisse JAMAIS l'utilisateur dans une impasse.
+- Propose toujours une "suggested_question" utile si les extraits permettent de répondre à une question proche.
+- Fournis toujours 2 à 3 "how_to_improve" concrètes (des reformulations cliquables, pas des conseils vagues).
+- Reste chaleureux et orienté solution : « voici ce que je peux faire », jamais un simple « non »."""
 
 PEDAGOGICAL_SUFFIX = """
 
@@ -131,13 +137,29 @@ def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = Fals
         limits=fb.get("limits"), how_to_improve=fb.get("how_to_improve"),
     )
 
+    suggested = data.get("suggested_question")
+    suggested = suggested.strip() if isinstance(suggested, str) and suggested.strip() else None
+
     if data.get("refused"):
-        resp = refusal("")
-        resp.feedback = feedback
-        return resp
+        # Refus « doux » : on ne laisse pas l'utilisateur dans une impasse. On garde les
+        # pistes (sources les plus proches), la question-pivot et les reformulations.
+        pistes: list[Citation] = []
+        seen_p: set = set()
+        for h in hits:
+            if h.doc_id in seen_p:
+                continue
+            seen_p.add(h.doc_id)
+            pistes.append(_citation_from_hit(h))
+            if len(pistes) >= 5:
+                break
+        return AskResponse(
+            answer=None, citations=pistes, refused=True, status="ok",
+            feedback=feedback, suggested_question=suggested,
+            prompt_version=settings.prompt_version,
+        )
 
     used = {str(d) for d in data.get("used_doc_ids") or []}
-    seen: set[str] = set()
+    seen: set = set()
     citations: list[Citation] = []
     for h in hits:
         if h.doc_id in seen:
@@ -149,5 +171,6 @@ def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = Fals
     status = data.get("status") if data.get("status") in ("ok", "partial") else "ok"
     return AskResponse(
         answer=data.get("answer"), citations=citations, refused=False,
-        status=status, feedback=feedback, prompt_version=settings.prompt_version,
+        status=status, feedback=feedback, suggested_question=suggested,
+        prompt_version=settings.prompt_version,
     )

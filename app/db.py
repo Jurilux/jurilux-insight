@@ -32,8 +32,19 @@ CREATE TABLE IF NOT EXISTS history (
     status     TEXT,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS feedback (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    question       TEXT NOT NULL,
+    helpful        INTEGER NOT NULL,
+    missing        TEXT,
+    status         TEXT,
+    prompt_version TEXT,
+    created_at     TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_history_user ON history(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_feedback ON feedback(id DESC);
 """
 
 
