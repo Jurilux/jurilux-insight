@@ -138,6 +138,23 @@ def logout(authorization: Optional[str] = Header(None)) -> dict:
     return {"ok": True}
 
 
+class PasswordChange(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@app.post("/api/auth/change-password")
+def change_password(body: PasswordChange,
+                    authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400,
+                            detail="mot de passe trop court (8 caractères minimum)")
+    if not auth.change_password(user["id"], body.old_password, body.new_password):
+        raise HTTPException(status_code=400, detail="mot de passe actuel incorrect")
+    return {"ok": True}
+
+
 @app.get("/api/me")
 def me(authorization: Optional[str] = Header(None)) -> dict:
     user = _require_user(authorization)

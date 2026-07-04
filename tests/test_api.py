@@ -209,6 +209,26 @@ def test_student_quota(temp_db, monkeypatch):
     assert me["quota"]["remaining"] == 0
 
 
+def test_change_password(temp_db):
+    tok = client.post("/api/auth/register",
+                      json={"email": "pw@b.com", "password": "password123"}).json()["token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    # mauvais mot de passe actuel -> 400
+    assert client.post("/api/auth/change-password", headers=h,
+                       json={"old_password": "faux", "new_password": "nouveaumdp1"}).status_code == 400
+    # nouveau trop court -> 400
+    assert client.post("/api/auth/change-password", headers=h,
+                       json={"old_password": "password123", "new_password": "court"}).status_code == 400
+    # anonyme -> 401
+    assert client.post("/api/auth/change-password",
+                       json={"old_password": "password123", "new_password": "nouveaumdp1"}).status_code == 401
+    # changement valide -> 200, puis l'ancien ne marche plus, le nouveau si
+    assert client.post("/api/auth/change-password", headers=h,
+                       json={"old_password": "password123", "new_password": "nouveaumdp1"}).status_code == 200
+    assert client.post("/api/auth/login", json={"email": "pw@b.com", "password": "password123"}).status_code == 401
+    assert client.post("/api/auth/login", json={"email": "pw@b.com", "password": "nouveaumdp1"}).status_code == 200
+
+
 def test_filter_expression():
     from app.schemas import SearchFilters
     from app.search import _filter_expr

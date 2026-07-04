@@ -74,6 +74,20 @@ def authenticate(email: str, password: str) -> Optional[dict]:
     return None
 
 
+def change_password(user_id: int, old_password: str, new_password: str) -> bool:
+    """Vérifie l'ancien mot de passe puis le remplace. Renvoie False si l'ancien
+    est incorrect (ou l'utilisateur introuvable). La longueur du nouveau est validée
+    en amont par l'appelant. Les sessions existantes restent valides."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not row or not verify_password(old_password, row["password_hash"]):
+            return False
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?",
+                     (hash_password(new_password), user_id))
+    return True
+
+
 # ---------- sessions ----------
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
