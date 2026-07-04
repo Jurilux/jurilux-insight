@@ -2,23 +2,57 @@
 # (alias deploytarget + user deploy en dur : évite les 2 bugs de quoting résolus).
 # Secrets requis (repo jurilux-api) : DEPLOY_HOST, DEPLOY_SSH_KEY.
 # Prérequis VPS : /opt/jurilux-api/.env présent (voir RUNBOOK_API.md).
+#
+# Rollback : Actions → « Run workflow » → renseigner `ref` avec un tag (ex. v1.0.0)
+# pour redéployer exactement cette version. Rollback rapide sans rebuild : rollback.sh.
 name: Deploy API (VPS OVH)
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref à déployer (tag/branche/SHA). Vide = ref courante. Rollback : entrer un tag ex. v1.0.0"
+        required: false
+        default: ""
 
 concurrency:
   group: deploy-api
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  # Gate qualité : les tests doivent passer avant tout déploiement.
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+      - name: Run tests
+        run: pytest -q
+
+  deploy:
+    needs: test
+    # Ne déploie jamais depuis une PR : uniquement push sur main ou déclenchement manuel.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
 
       - name: Setup SSH
         env:
@@ -47,7 +81,11 @@ jobs:
       - name: Build & restart
         run: |
           ssh deploytarget "cd /opt/jurilux-api && test -f .env || { echo 'ERREUR: /opt/jurilux-api/.env manquant (voir RUNBOOK_API.md)'; exit 1; }"
+          # Garder l'image courante comme :previous → rollback instantané possible (rollback.sh).
+          ssh deploytarget "sudo docker image tag jurilux-api-api:latest jurilux-api-api:previous 2>/dev/null || true"
           ssh deploytarget "cd /opt/jurilux-api && sudo docker compose up -d --build"
+          # Tracer la version déployée sur le VPS.
+          ssh deploytarget "printf '%s\n' '${{ github.event.inputs.ref || github.sha }}' | sudo tee /opt/jurilux-api/.deployed_ref >/dev/null"
 
       - name: Smoke test
         run: |

@@ -83,6 +83,27 @@ curl -s -X POST http://127.0.0.1/api/ask -H 'Content-Type: application/json' \
 
 Front http://51.178.16.135/ : le voyant doit passer à « Connecté » (health strict).
 
+## 9. Versions & rollback
+
+Chaque release est taggée en git (`vMAJEUR.MINEUR.PATCH`, ex. `v1.0.0`). Le CI :
+- lance `pytest` (gate) **avant** tout déploiement (`push main` échoue si un test casse) ;
+- garde l'image Docker courante sous `jurilux-api-api:previous` avant chaque rebuild ;
+- écrit la version déployée dans `/opt/jurilux-api/.deployed_ref`.
+
+**Rollback rapide** (dernier déploiement cassé, sans rebuild) :
+```bash
+ssh ubuntu@51.178.16.135 'sudo /opt/jurilux-api/rollback.sh'
+```
+
+**Rollback vers une version précise** (reconstruit exactement le tag) :
+GitHub → repo `jurilux-api` → Actions → **Deploy API (VPS OVH)** → *Run workflow* →
+champ `ref` = le tag voulu (ex. `v1.0.0`).
+
+**Tagger une nouvelle version** (après merge sur `main`) :
+```bash
+git tag -a v1.1.0 -m "Description" && git push origin v1.1.0
+```
+
 ## Dépannage
 
 - `sudo docker compose logs -f api` / `logs -f meilisearch`
