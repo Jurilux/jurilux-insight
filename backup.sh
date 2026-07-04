@@ -24,15 +24,18 @@ done
 dump=$($COMPOSE exec -T meilisearch sh -c "ls -1t /meili_data/dumps/*.dump | head -1" | tr -d '\r')
 $COMPOSE cp "meilisearch:$dump" "$BK/meili-$STAMP.dump"
 
-# 3. Archiver /data (laws + pdfs uniquement, pas backups/)
-tar -C /data -czf "$BK/data-$STAMP.tar.gz" laws pdfs
+# 3. Archiver /data/laws seulement (petit). PAS /data/pdfs : ~5 Go, statiques et
+#    re-téléchargeables via fetch_jurisprudence.py ; le dump Meili contient déjà tout
+#    le texte indexé. Éviter d'accumuler des archives de 5 Go (saturation disque).
+tar -C /data -czf "$BK/laws-$STAMP.tar.gz" laws
 
 # 3b. Purge des dumps dans le volume (déjà copiés)
 $COMPOSE exec -T meilisearch sh -c "find /meili_data/dumps -name '*.dump' -mtime +1 -delete" 2>/dev/null || true
 
-# 4. Rétention 14 jours
+# 4. Rétention 14 jours (dumps + archives lois ; purge aussi d'anciennes archives data-*)
 find "$BK" -name 'meili-*.dump' -mtime +14 -delete
-find "$BK" -name 'data-*.tar.gz' -mtime +14 -delete
+find "$BK" -name 'laws-*.tar.gz' -mtime +14 -delete
+find "$BK" -name 'data-*.tar.gz' -delete
 
 echo "OK backup $STAMP"
 ls -lh "$BK" | tail -6
