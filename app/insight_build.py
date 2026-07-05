@@ -5,6 +5,7 @@ Lancé après un refresh du corpus :  docker compose run --rm api python -m app.
 """
 import json
 import urllib.request
+from collections import Counter
 
 from . import db, insight
 from .config import settings
@@ -38,7 +39,7 @@ def run() -> dict:
             e = acc.get(doc_id)
             if e is None:
                 e = acc[doc_id] = {"year": d.get("year"), "jur": d.get("juridiction_key"),
-                                   "lawyers": {}, "outcome": None}
+                                   "lawyers": {}, "outcome": None, "matter": Counter()}
             for k, v in parsed["lawyers"].items():
                 cur = e["lawyers"].get(k)
                 if cur is None:
@@ -47,6 +48,7 @@ def run() -> dict:
                     cur["side"] = v["side"]
             if parsed["outcome"] and not e["outcome"]:
                 e["outcome"] = parsed["outcome"]
+            insight.matter_hits(d.get("text") or "", e["matter"])
         total += len(docs)
         offset += BATCH
         if offset % 100000 == 0:
@@ -54,18 +56,19 @@ def run() -> dict:
 
     rows = []
     for doc_id, e in acc.items():
+        matter = insight.matter_from_docid(doc_id) or (e["matter"].most_common(1)[0][0] if e["matter"] else None)
         for k, v in e["lawyers"].items():
             won = None
             if v["side"] and e["outcome"]:
                 won = 1 if v["side"] == e["outcome"] else 0
-            rows.append((k, v["display"], doc_id, e["year"], e["jur"], v["side"], won))
+            rows.append((k, v["display"], doc_id, e["year"], e["jur"], v["side"], won, matter))
 
     # Remplacement atomique : l'ancien index disparaît puis réapparaît en une transaction.
     with db.get_conn() as conn:
         conn.execute("DELETE FROM insight_appearances")
         conn.executemany(
             "INSERT OR IGNORE INTO insight_appearances "
-            "(name_key, display_name, doc_id, year, juridiction_key, side, won) VALUES (?,?,?,?,?,?,?)", rows)
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter) VALUES (?,?,?,?,?,?,?,?)", rows)
         inserted = conn.total_changes
     out = insight.stats()
     print(f"terminé : {total} chunks, {len(acc)} décisions → {out['lawyers']} avocats, "

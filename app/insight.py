@@ -33,6 +33,38 @@ _OUT_A = re.compile(r"fait droit|d[ée]clar\w* .{0,8}fond|dit .{0,12}fond[ée]|r
 _OUT_B = re.compile(r"d[ée]boute|non fond[ée]|rejette|confirme le jugement|confirme l['’]|pourvoi.{0,30}non fond",
                     re.IGNORECASE)
 
+# --- domaines de droit (matière dominante d'une décision, heuristique par mots-clés) ---
+_MATTER_RE = [
+    ("Droit du travail", re.compile(r"licenciement|contrat de travail|salari[ée]|pr[ée]avis|d[ée]mission|employeur|tribunal du travail|prud", re.I)),
+    ("Bail / logement", re.compile(r"\bbail\b|bailleur|preneur|\bloyer|location|expulsion", re.I)),
+    ("Famille", re.compile(r"divorce|garde d.{0,4}enfant|autorit[ée] parentale|pension alimentaire|[ée]poux|filiation", re.I)),
+    ("Successions", re.compile(r"succession|h[ée]riti|\blegs\b|testament|indivision", re.I)),
+    ("Sociétés / commercial", re.compile(r"soci[ée]t[ée]|g[ée]rant|actionnaire|faillite|liquidation|fonds de commerce", re.I)),
+    ("Responsabilité civile", re.compile(r"responsabilit[ée]|dommage|pr[ée]judice|indemnisation", re.I)),
+    ("Assurances", re.compile(r"assurance|assureur|sinistre", re.I)),
+    ("Immobilier / construction", re.compile(r"immobili|copropri[ée]t[ée]|servitude|usufruit|construction", re.I)),
+    ("Pénal", re.compile(r"p[ée]nal|pr[ée]venu|infraction|d[ée]lit\b|correctionnel", re.I)),
+    ("Fiscal / administratif", re.compile(r"fiscal|imp[ôo]t|\btaxe|administratif|contribution", re.I)),
+]
+_DOCID_MATTER = [("TRAVAIL", "Droit du travail"), ("BAIL", "Bail / logement")]
+
+
+def matter_hits(text: str, counter) -> None:
+    """Accumule les occurrences de mots-clés par domaine dans le Counter fourni."""
+    for name, rx in _MATTER_RE:
+        n = len(rx.findall(text or ""))
+        if n:
+            counter[name] += n
+
+
+def matter_from_docid(doc_id: str) -> Optional[str]:
+    """Domaine sûr déduit du doc_id pour les chambres spécialisées (JPLTRAVAIL, JPLBAIL…)."""
+    up = (doc_id or "").upper()
+    for tag, name in _DOCID_MATTER:
+        if tag in up:
+            return name
+    return None
+
 
 def _strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
@@ -83,7 +115,7 @@ def parse_chunk(text: str) -> dict:
 
 # ---------- accès données ----------
 def record_many(rows) -> int:
-    """rows: (name_key, display_name, doc_id, year, juridiction_key, side, won). INSERT OR IGNORE."""
+    """rows: (name_key, display_name, doc_id, year, juridiction_key, side, won, matter). INSERT OR IGNORE."""
     rows = list(rows)
     if not rows:
         return 0
@@ -91,7 +123,7 @@ def record_many(rows) -> int:
         before = conn.total_changes
         conn.executemany(
             "INSERT OR IGNORE INTO insight_appearances "
-            "(name_key, display_name, doc_id, year, juridiction_key, side, won) VALUES (?,?,?,?,?,?,?)", rows)
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter) VALUES (?,?,?,?,?,?,?,?)", rows)
         return conn.total_changes - before
 
 
@@ -101,14 +133,40 @@ def stats() -> dict:
     return {"lawyers": r["nk"] or 0, "appearances": r["n"] or 0}
 
 
-def list_lawyers(q: Optional[str], limit: int = 50) -> List[dict]:
-    sql = ("SELECT name_key, MAX(display_name) name, COUNT(*) cases, "
-           "MIN(year) first_year, MAX(year) last_year FROM insight_appearances ")
+def matters() -> List[dict]:
+    """Domaines disponibles (pour le filtre), classés par volume."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT matter, COUNT(*) n FROM insight_appearances "
+                            "WHERE matter IS NOT NULL GROUP BY matter ORDER BY n DESC").fetchall()
+    return [{"name": r["matter"], "count": r["n"]} for r in rows]
+
+
+def list_lawyers(q: Optional[str], limit: int = 50, sort: str = "cases",
+                 matter: Optional[str] = None) -> List[dict]:
+    """Avocats filtrés (recherche, matière) et triés (cases | recent | winrate)."""
+    where: list = []
     args: list = []
     if q and q.strip():
-        sql += "WHERE name_key LIKE ? "
+        where.append("name_key LIKE ?")
         args.append("%" + name_key(q) + "%")
-    sql += "GROUP BY name_key ORDER BY cases DESC, name LIMIT ?"
+    if matter:
+        where.append("matter = ?")   # ne compte que les décisions de ce domaine → top du domaine
+        args.append(matter)
+    sql = ("SELECT name_key, MAX(display_name) name, COUNT(*) cases, "
+           "MIN(year) first_year, MAX(year) last_year, "
+           "SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) won, "
+           "SUM(CASE WHEN won IN (0,1) THEN 1 ELSE 0 END) decided "
+           "FROM insight_appearances ")
+    if where:
+        sql += "WHERE " + " AND ".join(where) + " "
+    sql += "GROUP BY name_key "
+    if sort == "winrate":
+        sql += "HAVING decided >= 10 ORDER BY (won * 1.0 / decided) DESC, cases DESC "
+    elif sort == "recent":
+        sql += "ORDER BY last_year DESC, cases DESC "
+    else:
+        sql += "ORDER BY cases DESC, name "
+    sql += "LIMIT ?"
     args.append(max(1, min(limit, 200)))
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(sql, args).fetchall()]
@@ -117,23 +175,24 @@ def list_lawyers(q: Optional[str], limit: int = 50) -> List[dict]:
 def get_lawyer(key: str) -> Optional[dict]:
     with get_conn() as conn:
         rows = [dict(r) for r in conn.execute(
-            "SELECT display_name, doc_id, year, juridiction_key, side, won FROM insight_appearances "
+            "SELECT display_name, doc_id, year, juridiction_key, side, won, matter FROM insight_appearances "
             "WHERE name_key = ? ORDER BY year DESC, doc_id", (key,)).fetchall()]
     if not rows:
         return None
     years = [r["year"] for r in rows if r["year"]]
     won = sum(1 for r in rows if r["won"] == 1)
     lost = sum(1 for r in rows if r["won"] == 0)
-    as_a = sum(1 for r in rows if r["side"] == "A")
-    as_b = sum(1 for r in rows if r["side"] == "B")
+    mts = Counter(r["matter"] for r in rows if r["matter"])
     return {
         "name_key": key,
         "name": max((r["display_name"] for r in rows), key=len),
         "cases_count": len(rows),
         "first_year": min(years) if years else None,
         "last_year": max(years) if years else None,
-        "as_demandeur": as_a, "as_defendeur": as_b,
+        "as_demandeur": sum(1 for r in rows if r["side"] == "A"),
+        "as_defendeur": sum(1 for r in rows if r["side"] == "B"),
         "won": won, "lost": lost, "decided": won + lost,   # « decided » = issue estimable
+        "matters": [{"name": k, "count": c} for k, c in mts.most_common()],
         "cocounsel": _cocounsel(conn_key=key),
         "cases": rows,
     }

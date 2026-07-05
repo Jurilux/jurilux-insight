@@ -43,12 +43,21 @@ def test_parse_chunk_side_and_outcome():
     assert p["outcome"] == "B"  # « déboute » la demanderesse -> côté B l'emporte
 
 
+def test_matter_classification():
+    from collections import Counter
+    c = Counter()
+    insight.matter_hits("licenciement pour faute grave, préavis et contrat de travail", c)
+    assert c.most_common(1)[0][0] == "Droit du travail"
+    assert insight.matter_from_docid("20251209_JPLTRAVAIL_4035") == "Droit du travail"
+    assert insight.matter_from_docid("20250313_JPLBAIL_978") == "Bail / logement"
+
+
 def test_insight_store_and_profile(temp_db):
     insight.record_many([
-        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d1", 2020, "csj", "A", 1),
-        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d2", 2021, "tal", "B", 0),
-        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d2", 2021, "tal", "B", 0),  # doublon -> ignoré (UNIQUE)
-        ("LEX THIELEN", "Lex THIELEN", "d1", 2020, "csj", "B", 0),
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d1", 2020, "csj", "A", 1, "Droit du travail"),
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d2", 2021, "tal", "B", 0, "Bail / logement"),
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d2", 2021, "tal", "B", 0, "Bail / logement"),  # doublon ignoré
+        ("LEX THIELEN", "Lex THIELEN", "d1", 2020, "csj", "B", 0, "Droit du travail"),
     ])
     top = insight.list_lawyers(None, 10)
     assert top[0]["name"] == "Guy CASTEGNARO" and top[0]["cases"] == 2
@@ -56,9 +65,15 @@ def test_insight_store_and_profile(temp_db):
     prof = insight.get_lawyer("GUY CASTEGNARO")
     assert prof["cases_count"] == 2 and prof["won"] == 1 and prof["lost"] == 1 and prof["decided"] == 2
     assert prof["as_demandeur"] == 1 and prof["as_defendeur"] == 1
+    assert {m["name"] for m in prof["matters"]} == {"Droit du travail", "Bail / logement"}
     # réseau : THIELEN co-cité dans d1, côté opposé -> adversaire
     assert prof["cocounsel"][0]["name"] == "Lex THIELEN"
     assert prof["cocounsel"][0]["count"] == 1 and prof["cocounsel"][0]["relation"] == "adversaire"
+    # filtre par matière : seul GUY a du bail
+    bail = insight.list_lawyers(None, 10, matter="Bail / logement")
+    assert len(bail) == 1 and bail[0]["name"] == "Guy CASTEGNARO" and bail[0]["cases"] == 1
+    # matières disponibles
+    assert {m["name"] for m in insight.matters()} == {"Droit du travail", "Bail / logement"}
     assert insight.list_lawyers("thielen", 10)[0]["name"] == "Lex THIELEN"
 
 

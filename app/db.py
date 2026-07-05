@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS insight_appearances (
     juridiction_key TEXT,
     side            TEXT,               -- 'A' (demandeur/appelant) | 'B' (défendeur/intimé) | NULL
     won             INTEGER,            -- 1 gagné (estimé) | 0 perdu (estimé) | NULL indéterminé
+    matter          TEXT,               -- domaine de droit dominant de la décision (heuristique)
     UNIQUE(name_key, doc_id)
 );
 CREATE INDEX IF NOT EXISTS idx_insight_name ON insight_appearances(name_key);
@@ -150,6 +151,7 @@ def init_db() -> None:
             "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE insight_appearances ADD COLUMN side TEXT",     # 'A' (demandeur/appelant) | 'B' (défendeur/intimé)
             "ALTER TABLE insight_appearances ADD COLUMN won INTEGER",   # 1 gagné (estimé) | 0 perdu | NULL indéterminé
+            "ALTER TABLE insight_appearances ADD COLUMN matter TEXT",   # domaine de droit dominant
         ):
             try:
                 conn.execute(ddl)

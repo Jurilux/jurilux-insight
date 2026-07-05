@@ -611,11 +611,17 @@ def insight_stats(authorization: Optional[str] = Header(None)) -> dict:
     return insight.stats()
 
 
-@app.get("/api/insight/lawyers")
-def insight_lawyers(q: Optional[str] = None, limit: int = 50,
-                    authorization: Optional[str] = Header(None)) -> dict:
+@app.get("/api/insight/matters")
+def insight_matters(authorization: Optional[str] = Header(None)) -> dict:
     _require_admin(authorization)
-    return {"items": insight.list_lawyers(q, limit)}
+    return {"items": insight.matters()}
+
+
+@app.get("/api/insight/lawyers")
+def insight_lawyers(q: Optional[str] = None, limit: int = 50, sort: str = "cases",
+                    matter: Optional[str] = None, authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    return {"items": insight.list_lawyers(q, limit, sort=sort, matter=matter)}
 
 
 @app.get("/api/insight/lawyers/{key}")
