@@ -630,29 +630,25 @@ def ask(req: AskRequest, request: Request,
     return resp
 
 
-# ---------- Insight : profiling des AVOCATS (données publiques, usage interne, gate admin) ----------
+# ---------- Insight : profiling des AVOCATS (déploiement client/interne — accessible par défaut) ----------
 @app.get("/api/insight/stats")
-def insight_stats(authorization: Optional[str] = Header(None)) -> dict:
-    _require_admin(authorization)
+def insight_stats() -> dict:
     return insight.stats()
 
 
 @app.get("/api/insight/matters")
-def insight_matters(authorization: Optional[str] = Header(None)) -> dict:
-    _require_admin(authorization)
+def insight_matters() -> dict:
     return {"items": insight.matters()}
 
 
 @app.get("/api/insight/lawyers")
 def insight_lawyers(q: Optional[str] = None, limit: int = 50, sort: str = "cases",
-                    matter: Optional[str] = None, authorization: Optional[str] = Header(None)) -> dict:
-    _require_admin(authorization)
+                    matter: Optional[str] = None) -> dict:
     return {"items": insight.list_lawyers(q, limit, sort=sort, matter=matter)}
 
 
 @app.get("/api/insight/lawyers/{key}")
-def insight_lawyer(key: str, authorization: Optional[str] = Header(None)) -> dict:
-    _require_admin(authorization)
+def insight_lawyer(key: str) -> dict:
     prof = insight.get_lawyer(key)
     if not prof:
         raise HTTPException(status_code=404, detail="Avocat introuvable")

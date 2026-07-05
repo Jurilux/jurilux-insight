@@ -218,12 +218,12 @@ def _cocounsel(conn_key: str, limit: int = 12) -> List[dict]:
 
 
 # ---------- recherche nominative d'avocat depuis une question en langage naturel ----------
-_LAWYER_HINT = re.compile(r"avocate?|ma[iî]tre|barreau|\bconseil\b", re.IGNORECASE)
+_LAWYER_HINT = re.compile(r"avocate?|ma[iî]tre|barreau|\bconseil\b|plaid|plaideur|plaidoirie", re.IGNORECASE)
 _Q_STRIP = re.compile(
-    r"\b(quels?|quelles?|textes?|d[ée]cisions?|affaires?|arr[êe]ts?|jugements?|dossiers?|"
-    r"mentionn\w*|cit\w*|impliqu\w*|concern\w*|trouve\w*|liste\w*|montre\w*|"
-    r"par|de|des|du|la|le|les|un|une|sur|pour|avec|est|qui|dans|corpus|"
-    r"avocate?|ma[iî]tre|conseil)\b|[’']", re.IGNORECASE)
+    r"\b(donne|donnez|moi|nous|quels?|quelles?|textes?|d[ée]cisions?|jurisprudences?|affaires?|"
+    r"arr[êe]ts?|jugements?|dossiers?|mentionn\w*|cit\w*|impliqu\w*|concern\w*|trouve\w*|liste\w*|"
+    r"montre\w*|plaid\w*|d[ée]fend\w*|repr[ée]sent\w*|intervi\w*|par|de|des|du|la|le|les|un|une|sur|"
+    r"pour|avec|est|qui|où|ou|a|ont|dans|corpus|avocate?|ma[iî]tre|conseil)\b|[’']", re.IGNORECASE)
 
 
 def _candidate_name(q: str) -> str:

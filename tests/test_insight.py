@@ -90,6 +90,7 @@ def test_lawyer_lookup(temp_db):
     assert insight.lawyer_lookup("Quelles décisions pour l'avocat Zzzzxyz ?") is None
 
 
-def test_insight_gated(temp_db):
-    assert client.get("/api/insight/lawyers").status_code == 401
-    assert client.get("/api/insight/stats").status_code == 401
+def test_insight_public(temp_db):
+    # Déploiement client : Insight accessible par défaut (plus de gate admin).
+    assert client.get("/api/insight/lawyers").status_code == 200
+    assert client.get("/api/insight/stats").status_code == 200
