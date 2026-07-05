@@ -45,6 +45,11 @@ Règles :
   réponds — quitte à ce que ce soit partiel. Un extrait de jurisprudence pertinent SUFFIT
   à répondre (partiellement) : ne refuse pas sous prétexte qu'aucun TEXTE de loi de synthèse
   n'est fourni.
+- HORS PÉRIMÈTRE (recette de cuisine, météo, code informatique, question personnelle… — rien
+  à voir avec le droit luxembourgeois ni avec Jurilux) : refuse (refused=true), explique
+  brièvement ton périmètre, et surtout **used_doc_ids=[]** — ne cite AUCUN document (les extraits
+  récupérés sont alors hors sujet, ne fais PAS semblant qu'ils sont pertinents). Pas de
+  suggested_question ni de how_to_improve dans ce cas.
 - QUESTION TRÈS LARGE (ex. « Quels sont mes droits en tant que salarié ? ») : ne refuse
   JAMAIS. Donne un aperçu structuré des thèmes que les extraits permettent d'aborder
   (ce que le corpus documente : licenciement, harcèlement, préavis, congés, sécurité…),
@@ -191,12 +196,16 @@ def _pistes(hits: list[Hit], n: int = 5) -> list[Citation]:
 
 
 def _citations_used(hits: list[Hit], used: set) -> list[Citation]:
+    # On ne cite QUE les documents que le modèle a réellement utilisés. Si used est vide
+    # (ex. question hors sujet), on n'affiche AUCUNE source — plutôt que tous les extraits récupérés.
+    if not used:
+        return []
     out: list[Citation] = []
     seen: set = set()
     for h in hits:
         if h.doc_id in seen:
             continue
-        if not used or h.doc_id in used:
+        if h.doc_id in used:
             out.append(_citation_from_hit(h))
             seen.add(h.doc_id)
     return out
@@ -333,7 +342,9 @@ def answer_stream(q: str, hits: list[Hit], temperature: float, pedagogical: bool
     text = emitted.strip()
 
     if refused:
-        cites = _pistes(hits)
+        # Pistes UNIQUEMENT pour un refus « doux » (question dans le périmètre → il y a une
+        # reformulation utile). Pour un hors-sujet (pas de piste), aucune source.
+        cites = _pistes(hits) if (suggested or how) else []
         feedback = {"why": text or None, "how_to_improve": how}
         final_answer = None
     else:
