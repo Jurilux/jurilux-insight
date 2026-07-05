@@ -6,12 +6,14 @@ Endpoints :
                    corrige le voyant vert indulgent.)
   POST /api/ask  — RAG : Meilisearch -> Claude -> AskResponse.
 """
+import json
 import logging
 import time
 from collections import defaultdict, deque
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import (admin, alert as alert_store, alert_runner, auth, db, feedback as fb_store,
@@ -600,6 +602,81 @@ def ask(req: AskRequest, request: Request,
         except Exception:
             log.exception("écriture historique")
     return resp
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _sse_refusal(why: str):
+    yield _sse({"type": "delta", "text": why})
+    yield _sse({"type": "meta", "answer": None, "citations": [], "refused": True,
+                "status": "ok", "suggested_question": None, "feedback": {"why": why},
+                "prompt_version": settings.prompt_version})
+
+
+@app.post("/api/ask/stream")
+def ask_stream(req: AskRequest, request: Request,
+               authorization: Optional[str] = Header(None)) -> StreamingResponse:
+    """Version STREAMÉE de /api/ask (SSE) : la réponse s'affiche au fil de la génération
+    (~1-2 s au premier token au lieu de ~14 s). Événements : {type:delta,text} puis {type:meta}."""
+    t0 = time.time()
+    metrics.mark_ask()
+    metrics.incr("ask_total")
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+    if not _rate_ok(_client_ip(request)):
+        metrics.incr("ask_rate_limited")
+        metrics.incr("ask_refused")
+        return StreamingResponse(_sse_refusal(
+            "Trop de requêtes en peu de temps. Patientez un instant avant de réessayer."),
+            media_type="text/event-stream", headers=headers)
+
+    user = _current_user(authorization)
+    if user:
+        qi = auth.quota_info(user)
+        if qi["remaining"] is not None and qi["remaining"] <= 0:
+            metrics.incr("ask_refused")
+            return StreamingResponse(_sse_refusal(
+                f"Quota mensuel atteint ({qi['limit']} questions/mois, plan étudiant). "
+                "Il se réinitialise le 1er du mois — ou passez au plan pro."),
+                media_type="text/event-stream", headers=headers)
+
+    def gen():
+        try:
+            t_s = time.time()
+            hits = search.search(req.q, req.topK, req.filters)
+            metrics.record_search_ms((time.time() - t_s) * 1000)
+        except Exception:
+            log.exception("Meilisearch indisponible")
+            metrics.incr("ask_errors")
+            yield from _sse_refusal("Le moteur de recherche est momentanément indisponible. Réessayez.")
+            return
+
+        final = None
+        t_l = time.time()
+        try:
+            for ev in rag.answer_stream(req.q, hits, req.temperature, pedagogical=req.pedagogical):
+                if ev.get("type") == "meta":
+                    final = ev
+                yield _sse(ev)
+        except Exception:
+            log.exception("Erreur LLM (stream)")
+            metrics.incr("ask_errors")
+            yield from _sse_refusal("La génération de réponse a échoué. Réessayez dans un instant.")
+            return
+
+        metrics.record_llm_ms((time.time() - t_l) * 1000)
+        metrics.record_latency_ms((time.time() - t0) * 1000)
+        if final and final.get("refused"):
+            metrics.incr("ask_refused")
+        if user and final:
+            try:
+                auth.add_history(user["id"], req.q, final.get("answer"), final.get("status"))
+            except Exception:
+                log.exception("écriture historique")
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
 if __name__ == "__main__":

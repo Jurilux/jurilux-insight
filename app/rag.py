@@ -13,7 +13,7 @@ from .config import settings
 from .schemas import AskResponse, Citation, Feedback
 from .search import Hit, corpus_overview
 
-SYSTEM_PROMPT = """Tu es Jurilux, assistant juridique spécialisé en droit luxembourgeois.
+_INTRO_RULES = """Tu es Jurilux, assistant juridique spécialisé en droit luxembourgeois.
 Pour les questions de DROIT, tu réponds à partir des extraits fournis (jurisprudence luxembourgeoise
 et textes de Legilux). Pour les questions sur JURILUX lui-même (l'outil, son corpus, tes capacités),
 tu réponds à partir du bloc « À PROPOS DE JURILUX » fourni.
@@ -51,9 +51,10 @@ Règles :
   puis oriente vers 2-3 angles PRÉCIS via suggested_question et how_to_improve.
 - Ne jamais inventer de jurisprudence, d'article de loi ou de référence : n'affirme que ce
   que les extraits soutiennent, et distingue clairement le certain de l'incomplet.
-- Rappelle si utile que ceci ne remplace pas un avis d'avocat.
+- Rappelle si utile que ceci ne remplace pas un avis d'avocat."""
 
-Tu réponds EXCLUSIVEMENT avec un objet JSON valide, sans texte autour, au format :
+
+_JSON_FORMAT = """Tu réponds EXCLUSIVEMENT avec un objet JSON valide, sans texte autour, au format :
 {
   "answer": "réponse en markdown, ou null si refus",
   "used_doc_ids": ["doc_id des extraits réellement utilisés"],
@@ -78,6 +79,24 @@ IMPORTANT — ne laisse JAMAIS l'utilisateur dans une impasse, que la réponse s
   que les extraits couvrent effectivement.
 - Fournis toujours 1 "suggested_question" (le meilleur angle) + 2 à 3 "how_to_improve" (reformulations cliquables).
 - Reste chaleureux et orienté solution : « voici ce que je peux dire », jamais un simple « non »."""
+
+SYSTEM_PROMPT = _INTRO_RULES + "\n\n" + _JSON_FORMAT
+
+# Format streamé : la réponse d'abord (markdown, affichée en direct), puis un JSON de méta compact.
+_STREAM_FORMAT = """FORMAT DE RÉPONSE (streaming) — tu réponds en DEUX temps, dans CET ordre EXACT :
+1) D'ABORD la réponse elle-même, en markdown, telle que l'utilisateur doit la lire. Si tu refuses,
+   écris à la place une courte phrase bienveillante (1-2 lignes) disant que tu n'as pas de réponse
+   certaine et pourquoi. N'écris PAS de JSON à cette étape.
+2) PUIS, sur une nouvelle ligne, la balise EXACTE §§§META§§§ immédiatement suivie d'un objet JSON
+   compact et valide, et RIEN après :
+   {"used_doc_ids": ["doc_id réellement utilisés"], "status": "ok"|"partial", "refused": true|false,
+    "suggested_question": "question voisine précise, ou null",
+    "how_to_improve": ["2 à 3 reformulations précises et cliquables (surtout si partial ou refus)"]}
+Rappels : suggested_question et how_to_improve SPÉCIFIQUES et ciblés (jamais larges). Pour une question
+méta sur Jurilux : réponds normalement, status="ok", used_doc_ids=[], refused=false. Ne place JAMAIS la
+balise §§§META§§§ ailleurs qu'entre la réponse et le JSON final."""
+
+SYSTEM_PROMPT_STREAM = _INTRO_RULES + "\n\n" + _STREAM_FORMAT
 
 PEDAGOGICAL_SUFFIX = """
 
@@ -157,6 +176,44 @@ def refusal(why: str) -> AskResponse:
     )
 
 
+def _pistes(hits: list[Hit], n: int = 5) -> list[Citation]:
+    """Sources les plus proches (dédup par doc_id) — pour un refus doux."""
+    out: list[Citation] = []
+    seen: set = set()
+    for h in hits:
+        if h.doc_id in seen:
+            continue
+        seen.add(h.doc_id)
+        out.append(_citation_from_hit(h))
+        if len(out) >= n:
+            break
+    return out
+
+
+def _citations_used(hits: list[Hit], used: set) -> list[Citation]:
+    out: list[Citation] = []
+    seen: set = set()
+    for h in hits:
+        if h.doc_id in seen:
+            continue
+        if not used or h.doc_id in used:
+            out.append(_citation_from_hit(h))
+            seen.add(h.doc_id)
+    return out
+
+
+def _system_blocks(prompt: str, pedagogical: bool) -> list:
+    """System en blocs avec cache_control : le préfixe statique (règles) est mis en cache
+    (prompt caching Anthropic) → time-to-first-token plus court et coût input réduit."""
+    text = prompt + (PEDAGOGICAL_SUFFIX if pedagogical else "")
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
+
+
+def _user_content(q: str, hits: list[Hit]) -> str:
+    return (f"{_about_block()}\n\n=== Extraits du corpus (pour les questions de DROIT) ===\n\n"
+            f"{_context_block(hits)}\n\nQuestion : {q}")
+
+
 def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = False) -> AskResponse:
     if not hits:
         return refusal(
@@ -169,13 +226,8 @@ def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = Fals
         model=settings.anthropic_model,
         max_tokens=settings.anthropic_max_tokens,
         temperature=temperature,
-        system=SYSTEM_PROMPT + (PEDAGOGICAL_SUFFIX if pedagogical else ""),
-        messages=[{
-            "role": "user",
-            "content": (f"{_about_block()}\n\n"
-                        f"=== Extraits du corpus (pour les questions de DROIT) ===\n\n"
-                        f"{_context_block(hits)}\n\nQuestion : {q}"),
-        }],
+        system=_system_blocks(SYSTEM_PROMPT, pedagogical),
+        messages=[{"role": "user", "content": _user_content(q, hits)}],
     )
     raw = "".join(b.text for b in msg.content if b.type == "text")
     data = _extract_json(raw)
@@ -200,36 +252,97 @@ def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = Fals
     suggested = suggested.strip() if isinstance(suggested, str) and suggested.strip() else None
 
     if data.get("refused"):
-        # Refus « doux » : on ne laisse pas l'utilisateur dans une impasse. On garde les
-        # pistes (sources les plus proches), la question-pivot et les reformulations.
-        pistes: list[Citation] = []
-        seen_p: set = set()
-        for h in hits:
-            if h.doc_id in seen_p:
-                continue
-            seen_p.add(h.doc_id)
-            pistes.append(_citation_from_hit(h))
-            if len(pistes) >= 5:
-                break
+        # Refus « doux » : pistes (sources proches) + question-pivot + reformulations.
         return AskResponse(
-            answer=None, citations=pistes, refused=True, status="ok",
+            answer=None, citations=_pistes(hits), refused=True, status="ok",
             feedback=feedback, suggested_question=suggested,
             prompt_version=settings.prompt_version,
         )
 
     used = {str(d) for d in data.get("used_doc_ids") or []}
-    seen: set = set()
-    citations: list[Citation] = []
-    for h in hits:
-        if h.doc_id in seen:
-            continue
-        if not used or h.doc_id in used:
-            citations.append(_citation_from_hit(h))
-            seen.add(h.doc_id)
-
     status = data.get("status") if data.get("status") in ("ok", "partial") else "ok"
     return AskResponse(
-        answer=data.get("answer"), citations=citations, refused=False,
+        answer=data.get("answer"), citations=_citations_used(hits, used), refused=False,
         status=status, feedback=feedback, suggested_question=suggested,
         prompt_version=settings.prompt_version,
     )
+
+
+def answer_stream(q: str, hits: list[Hit], temperature: float, pedagogical: bool = False):
+    """Générateur de streaming. Yield des events :
+      {"type":"delta","text": ...}  — morceaux de la réponse (markdown), à afficher en direct
+      {"type":"meta", ...}          — méta finale (citations, refused, status, suggested_question, feedback)
+    La partie texte précède la balise §§§META§§§ ; le JSON qui suit donne la méta."""
+    if not hits:
+        why = ("Aucun document pertinent trouvé dans le corpus pour cette question "
+               "(avec les filtres appliqués, le cas échéant).")
+        yield {"type": "delta", "text": why}
+        yield {"type": "meta", "answer": None, "citations": [], "refused": True, "status": "ok",
+               "suggested_question": None, "feedback": {"why": why},
+               "prompt_version": settings.prompt_version}
+        return
+
+    DELIM = "§§§META§§§"
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    emitted = ""   # texte déjà émis (avant délimiteur)
+    buf = ""       # tout le texte reçu
+    meta_raw = ""  # après le délimiteur
+    delim_seen = False
+
+    with client.messages.stream(
+        model=settings.anthropic_model,
+        max_tokens=settings.anthropic_max_tokens,
+        temperature=temperature,
+        system=_system_blocks(SYSTEM_PROMPT_STREAM, pedagogical),
+        messages=[{"role": "user", "content": _user_content(q, hits)}],
+    ) as stream:
+        for chunk in stream.text_stream:
+            if delim_seen:
+                meta_raw += chunk
+                continue
+            buf += chunk
+            if DELIM in buf:
+                before, _, after = buf.partition(DELIM)
+                delta = before[len(emitted):]
+                if delta:
+                    yield {"type": "delta", "text": delta}
+                emitted = before
+                meta_raw = after
+                delim_seen = True
+            else:
+                # garder une marge (le délimiteur peut être à cheval sur 2 chunks)
+                safe = buf[:-len(DELIM)] if len(buf) > len(DELIM) else ""
+                delta = safe[len(emitted):]
+                if delta:
+                    yield {"type": "delta", "text": delta}
+                    emitted = safe
+
+    if not delim_seen:
+        # le modèle n'a pas produit la balise : tout est réponse
+        delta = buf[len(emitted):]
+        if delta:
+            yield {"type": "delta", "text": delta}
+        emitted = buf
+
+    data = _extract_json(meta_raw) or {}
+    refused = bool(data.get("refused"))
+    status = data.get("status") if data.get("status") in ("ok", "partial") else "ok"
+    suggested = data.get("suggested_question")
+    suggested = suggested.strip() if isinstance(suggested, str) and suggested.strip() else None
+    how = data.get("how_to_improve") if isinstance(data.get("how_to_improve"), list) else None
+    text = emitted.strip()
+
+    if refused:
+        cites = _pistes(hits)
+        feedback = {"why": text or None, "how_to_improve": how}
+        final_answer = None
+    else:
+        used = {str(d) for d in data.get("used_doc_ids") or []}
+        cites = _citations_used(hits, used)
+        feedback = {"how_to_improve": how} if how else None
+        final_answer = text or None
+
+    yield {"type": "meta", "answer": final_answer,
+           "citations": [c.model_dump() for c in cites],
+           "refused": refused, "status": status, "suggested_question": suggested,
+           "feedback": feedback, "prompt_version": settings.prompt_version}

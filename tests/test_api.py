@@ -257,6 +257,37 @@ def test_change_password(temp_db):
     assert client.post("/api/auth/login", json={"email": "pw@b.com", "password": "nouveaumdp1"}).status_code == 200
 
 
+def test_ask_stream(monkeypatch):
+    monkeypatch.setattr(search, "search", lambda q, k, f: HITS)
+    chunks = [
+        "La faute grave", " justifie le licenciement", " [csj_ch08_2019_demo1].",
+        "\n§§§META§§§\n",
+        '{"used_doc_ids":["csj_ch08_2019_demo1"],"status":"ok","refused":false,'
+        '"suggested_question":"Un exemple ?","how_to_improve":["préciser l\'année"]}',
+    ]
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        @property
+        def text_stream(self):
+            return iter(chunks)
+
+    with patch.object(rag.anthropic, "Anthropic") as A:
+        A.return_value.messages.stream.return_value = FakeStream()
+        r = client.post("/api/ask/stream", json={"q": "faute grave"})
+    assert r.status_code == 200
+    body = r.text
+    assert "faute grave" in body.lower()          # le texte de réponse est streamé
+    assert "META" not in body                       # le délimiteur ne fuit PAS dans la sortie
+    assert '"type": "meta"' in body                 # un event méta est envoyé
+    assert '"refused": false' in body
+
+
 def test_share_roundtrip(temp_db):
     payload = {"question": "Quel préavis pour un CDD ?",
                "answer": "Le préavis dépend de... [doc]",
