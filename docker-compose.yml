@@ -26,6 +26,13 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    # Concurrence : Meili inonde l'embedder de requêtes en parallèle lors d'un ré-embedding.
+    # Avec 1 seul slot, les requêtes en file dépassent le timeout Meili (~30 s) → tâche échoue.
+    # Plusieurs slots parallèles vident la file plus vite (moins de timeouts).
+    environment:
+      OLLAMA_NUM_PARALLEL: "4"
+      OLLAMA_MAX_QUEUE: "8192"
+      OLLAMA_KEEP_ALIVE: "-1"
     volumes:
       - ollama_data:/root/.ollama
 
