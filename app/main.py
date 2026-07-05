@@ -14,8 +14,8 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from . import (admin, alert as alert_store, auth, db, feedback as fb_store, metrics, rag,
-               search, share as share_store, workspace as ws)
+from . import (admin, alert as alert_store, alert_runner, auth, db, feedback as fb_store,
+               metrics, rag, search, share as share_store, workspace as ws)
 from .config import settings
 from .schemas import (AskRequest, AskResponse, DossierCreate, DossierItemAdd, FeedbackIn,
                       MemberAdd, SearchFilters, ShareIn, WorkspaceCreate)
@@ -329,22 +329,12 @@ class AlertCreate(BaseModel):
     source_type: Optional[str] = None
 
 
-def _run_alert_check(al: dict) -> int:
-    """Passe le sujet dans la recherche et enregistre les résultats non encore vus."""
-    f = SearchFilters(source_type=al.get("source_type") or None)
-    hits = search.search(al["query"], 20, f)
-    payload = [{"doc_id": h.doc_id, "source_type": h.source_type, "title": h.title,
-                "year": h.year, "juridiction_key": h.juridiction_key,
-                "url": h.url, "pdf_url": h.pdf_url} for h in hits]
-    return alert_store.add_hits(al["id"], payload)
-
-
 @app.post("/api/alerts")
 def create_alert(body: AlertCreate, authorization: Optional[str] = Header(None)) -> dict:
     user = _require_user(authorization)
     al = alert_store.create_alert(user["id"], body.query, body.source_type)
     try:
-        al["unseen"] = _run_alert_check(al)  # premier check : remonte les décisions actuelles du sujet
+        al["unseen"] = alert_runner.check(al)  # 1er check : remonte les décisions actuelles du sujet
     except Exception:
         log.exception("check alerte à la création")
     return al
@@ -356,13 +346,26 @@ def list_alerts(authorization: Optional[str] = Header(None)) -> dict:
     return {"items": alert_store.list_alerts(user["id"])}
 
 
+@app.post("/api/alerts/check-all")
+def check_all_alerts(authorization: Optional[str] = Header(None)) -> dict:
+    """Rafraîchit toutes les alertes de l'utilisateur (bouton « Vérifier toutes »)."""
+    user = _require_user(authorization)
+    new = 0
+    for al in alert_store.list_alerts(user["id"]):
+        try:
+            new += alert_runner.check(al)
+        except Exception:
+            log.exception("check alerte")
+    return {"new": new}
+
+
 @app.post("/api/alerts/{aid}/check")
 def check_alert(aid: int, authorization: Optional[str] = Header(None)) -> dict:
     user = _require_user(authorization)
     al = alert_store.get_alert(aid, user["id"])
     if not al:
         raise HTTPException(status_code=404, detail="Alerte introuvable")
-    return {"new": _run_alert_check(al)}
+    return {"new": alert_runner.check(al)}
 
 
 @app.get("/api/alerts/{aid}/hits")

@@ -35,6 +35,13 @@ def list_alerts(user_id: int) -> List[dict]:
     return [dict(r) for r in rows]
 
 
+def all_alerts() -> List[dict]:
+    """Toutes les alertes (tous utilisateurs) — pour le check groupé par le cron d'ingestion."""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT id, query, source_type FROM alerts").fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_alert(alert_id: int, user_id: int) -> Optional[dict]:
     with get_conn() as conn:
         row = conn.execute("SELECT id, query, source_type FROM alerts WHERE id = ? AND user_id = ?",

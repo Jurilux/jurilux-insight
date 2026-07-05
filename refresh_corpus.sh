@@ -53,4 +53,8 @@ curl -s -X PUT "$MEILI/indexes/corpus_meta/documents" \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d "[{\"id\":1,\"decisions\":$DEC,\"texts\":$TXT,\"updated\":\"$UPD\"}]" >/dev/null
 
+# 5. Alertes de veille : détecter les nouvelles décisions correspondant aux sujets suivis
+#    (push automatique in-app — les utilisateurs voient le badge à leur prochaine connexion).
+$COMPOSE run --rm api python -m app.alert_runner || echo "WARN check alertes"
+
 echo "== $(date -Is) refresh terminé : $DEC décisions, $TXT textes, maj $UPD =="

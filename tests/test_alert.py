@@ -71,6 +71,22 @@ def test_alert_flow(temp_db, monkeypatch):
     assert client.get("/api/alerts", headers=_h(tok)).json()["items"] == []
 
 
+def test_alert_check_all_and_runner(temp_db, monkeypatch):
+    from app import alert_runner
+    monkeypatch.setattr(search, "search", lambda q, k, f: HITS)
+    tok = _tok("cc@a.lu")
+    client.post("/api/alerts", json={"query": "sujet A"}, headers=_h(tok))
+    client.post("/api/alerts", json={"query": "sujet B"}, headers=_h(tok))
+    # « Vérifier toutes » : rien de neuf (déjà vu au 1er check)
+    assert client.post("/api/alerts/check-all", headers=_h(tok)).json()["new"] == 0
+    # runner global (cron d'ingestion) : idem
+    assert alert_runner.run() == 0
+    # une nouvelle décision apparaît -> le runner la détecte sur les 2 alertes
+    monkeypatch.setattr(search, "search", lambda q, k, f: HITS + [
+        Hit(chunk_id="cX", doc_id="20240909_X", text="w", source_type="jurisprudence")])
+    assert alert_runner.run() == 2
+
+
 def test_alert_requires_auth(temp_db):
     assert client.get("/api/alerts").status_code == 401
     assert client.post("/api/alerts", json={"query": "faute grave"}).status_code == 401
