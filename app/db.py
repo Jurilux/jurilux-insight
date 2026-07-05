@@ -82,12 +82,37 @@ CREATE TABLE IF NOT EXISTS dossier_items (
     added_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL
 );
+-- V3 : alertes « nouvelle jurisprudence sur mes sujets » (veille in-app, sans e-mail).
+CREATE TABLE IF NOT EXISTS alerts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    query       TEXT NOT NULL,
+    source_type TEXT,
+    created_at  TEXT NOT NULL,
+    checked_at  TEXT
+);
+CREATE TABLE IF NOT EXISTS alert_hits (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id        INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+    doc_id          TEXT NOT NULL,
+    source_type     TEXT,
+    title           TEXT,
+    year            INTEGER,
+    juridiction_key TEXT,
+    url             TEXT,
+    pdf_url         TEXT,
+    seen            INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    UNIQUE(alert_id, doc_id)
+);
 CREATE INDEX IF NOT EXISTS idx_history_user ON history(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback ON feedback(id DESC);
 CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_dossiers_ws ON dossiers(workspace_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_dossier_items ON dossier_items(dossier_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_user ON alerts(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_hits ON alert_hits(alert_id, id DESC);
 """
 
 
