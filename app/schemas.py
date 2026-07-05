@@ -61,3 +61,24 @@ class ShareIn(BaseModel):
     answer: Optional[str] = None
     citations: list = Field(default_factory=list)  # instantané des citations (dicts)
     status: Optional[str] = None
+
+
+# V3 offre cabinet
+class WorkspaceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class MemberAdd(BaseModel):
+    email: str = Field(min_length=3)
+    role: str = "member"
+
+
+class DossierCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class DossierItemAdd(BaseModel):
+    question: str = Field(min_length=1)
+    answer: Optional[str] = None
+    citations: list = Field(default_factory=list)
+    status: Optional[str] = None

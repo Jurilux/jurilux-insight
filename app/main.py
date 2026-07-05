@@ -14,9 +14,10 @@ from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from . import admin, auth, db, feedback as fb_store, metrics, rag, search, share as share_store
+from . import admin, auth, db, feedback as fb_store, metrics, rag, search, share as share_store, workspace as ws
 from .config import settings
-from .schemas import AskRequest, AskResponse, FeedbackIn, SearchFilters, ShareIn
+from .schemas import (AskRequest, AskResponse, DossierCreate, DossierItemAdd, FeedbackIn,
+                      MemberAdd, SearchFilters, ShareIn, WorkspaceCreate)
 
 log = logging.getLogger("jurilux")
 logging.basicConfig(level=logging.INFO)
@@ -185,6 +186,91 @@ def read_share(share_id: str) -> dict:
     if not data:
         raise HTTPException(status_code=404, detail="Lien introuvable")
     return data
+
+
+# ---------- V3 offre cabinet : espaces de travail, membres, dossiers partagés ----------
+def _require_ws_role(workspace_id: int, user: dict, roles: tuple) -> str:
+    role = ws.membership(workspace_id, user["id"])
+    if role is None:
+        raise HTTPException(status_code=404, detail="Espace introuvable")
+    if role not in roles:
+        raise HTTPException(status_code=403, detail="Action réservée aux administrateurs de l'espace")
+    return role
+
+
+@app.post("/api/workspaces")
+def create_workspace(body: WorkspaceCreate, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    return ws.create_workspace(user["id"], body.name)
+
+
+@app.get("/api/workspaces")
+def list_workspaces(authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    return {"items": ws.list_workspaces(user["id"])}
+
+
+@app.get("/api/workspaces/{wid}/members")
+def list_members(wid: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _require_ws_role(wid, user, ws.ROLES)  # tout membre peut voir
+    return {"items": ws.list_members(wid)}
+
+
+@app.post("/api/workspaces/{wid}/members")
+def add_member(wid: int, body: MemberAdd, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _require_ws_role(wid, user, ("owner", "admin"))
+    try:
+        return ws.add_member(wid, body.email, body.role)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/workspaces/{wid}/members/{uid}")
+def remove_member(wid: int, uid: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _require_ws_role(wid, user, ("owner", "admin"))
+    if not ws.remove_member(wid, uid):
+        raise HTTPException(status_code=400, detail="Membre introuvable (ou propriétaire, non retirable)")
+    return {"ok": True}
+
+
+@app.get("/api/workspaces/{wid}/dossiers")
+def list_dossiers(wid: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _require_ws_role(wid, user, ws.ROLES)
+    return {"items": ws.list_dossiers(wid)}
+
+
+@app.post("/api/workspaces/{wid}/dossiers")
+def create_dossier(wid: int, body: DossierCreate, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _require_ws_role(wid, user, ws.ROLES)
+    return ws.create_dossier(wid, body.name, user["id"])
+
+
+def _dossier_member(did: int, user: dict) -> None:
+    wid = ws.dossier_workspace(did)
+    if wid is None:
+        raise HTTPException(status_code=404, detail="Dossier introuvable")
+    _require_ws_role(wid, user, ws.ROLES)
+
+
+@app.get("/api/dossiers/{did}/items")
+def list_dossier_items(did: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _dossier_member(did, user)
+    return {"items": ws.list_items(did)}
+
+
+@app.post("/api/dossiers/{did}/items")
+def add_dossier_item(did: int, body: DossierItemAdd,
+                     authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _dossier_member(did, user)
+    cites = [c for c in body.citations if isinstance(c, dict)]
+    return ws.add_item(did, body.question, body.answer, cites, body.status, user["id"])
 
 
 @app.get("/api/me")

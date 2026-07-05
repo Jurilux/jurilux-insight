@@ -1,0 +1,87 @@
+"""Tests V3 offre cabinet : espaces, rôles, cloisonnement, dossiers partagés."""
+import pytest
+from fastapi.testclient import TestClient
+
+import app.main as m
+from app import db
+from app.main import app
+
+client = TestClient(app)
+
+
+@pytest.fixture
+def temp_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(m.settings, "db_path", str(tmp_path / "test.db"))
+    db.init_db()
+    yield
+
+
+def _tok(email: str) -> str:
+    return client.post("/api/auth/register",
+                       json={"email": email, "password": "password123"}).json()["token"]
+
+
+def _h(t: str) -> dict:
+    return {"Authorization": f"Bearer {t}"}
+
+
+def test_workspace_lifecycle_and_isolation(temp_db):
+    owner = _tok("owner@cab.lu")
+    alice = _tok("alice@cab.lu")
+    bob = _tok("bob@ext.lu")  # extérieur
+
+    # créer un espace -> créateur = owner
+    r = client.post("/api/workspaces", json={"name": "Cabinet Test"}, headers=_h(owner))
+    assert r.status_code == 200
+    wid = r.json()["id"]
+    assert r.json()["role"] == "owner"
+    assert client.get("/api/workspaces", headers=_h(owner)).json()["items"][0]["members"] == 1
+
+    # cloisonnement : un non-membre ne voit rien (404)
+    assert client.get(f"/api/workspaces/{wid}/members", headers=_h(bob)).status_code == 404
+    assert client.get(f"/api/workspaces/{wid}/dossiers", headers=_h(bob)).status_code == 404
+
+    # ajouter alice (admin owner requis)
+    r = client.post(f"/api/workspaces/{wid}/members",
+                    json={"email": "alice@cab.lu", "role": "member"}, headers=_h(owner))
+    assert r.status_code == 200
+    # email inexistant -> 400
+    assert client.post(f"/api/workspaces/{wid}/members",
+                       json={"email": "nobody@x.lu", "role": "member"}, headers=_h(owner)).status_code == 400
+    # alice (member) ne peut PAS ajouter de membre
+    assert client.post(f"/api/workspaces/{wid}/members",
+                       json={"email": "bob@ext.lu", "role": "member"}, headers=_h(alice)).status_code == 403
+
+    # alice voit maintenant l'espace et ses 2 membres
+    assert len(client.get("/api/workspaces", headers=_h(alice)).json()["items"]) == 1
+    assert len(client.get(f"/api/workspaces/{wid}/members", headers=_h(alice)).json()["items"]) == 2
+
+
+def test_shared_dossiers(temp_db):
+    owner = _tok("o@cab.lu")
+    alice = _tok("a@cab.lu")
+    wid = client.post("/api/workspaces", json={"name": "Cab"}, headers=_h(owner)).json()["id"]
+    client.post(f"/api/workspaces/{wid}/members", json={"email": "a@cab.lu", "role": "member"}, headers=_h(owner))
+
+    # owner crée un dossier + y ajoute une réponse
+    did = client.post(f"/api/workspaces/{wid}/dossiers", json={"name": "Affaire Durand"}, headers=_h(owner)).json()["id"]
+    client.post(f"/api/dossiers/{did}/items", headers=_h(owner), json={
+        "question": "Préavis licenciement ?", "answer": "3 mois... [doc]",
+        "citations": [{"doc_id": "eli-code-travail", "source_type": "law"}], "status": "ok"})
+
+    # alice (autre membre) VOIT le dossier et son contenu (partage)
+    dossiers = client.get(f"/api/workspaces/{wid}/dossiers", headers=_h(alice)).json()["items"]
+    assert dossiers[0]["name"] == "Affaire Durand" and dossiers[0]["items"] == 1
+    items = client.get(f"/api/dossiers/{did}/items", headers=_h(alice)).json()["items"]
+    assert items[0]["question"] == "Préavis licenciement ?"
+    assert items[0]["citations"][0]["doc_id"] == "eli-code-travail"
+    assert items[0]["added_by"] == "o@cab.lu"
+
+    # un extérieur n'accède pas au dossier
+    ext = _tok("ext@x.lu")
+    assert client.get(f"/api/dossiers/{did}/items", headers=_h(ext)).status_code in (403, 404)
+
+
+def test_workspace_requires_auth(temp_db):
+    assert client.get("/api/workspaces").status_code == 401
+    assert client.post("/api/workspaces", json={"name": "X"}).status_code == 401
