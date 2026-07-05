@@ -14,6 +14,8 @@ _counters = {
     "ask_rate_limited": 0,
 }
 _latencies_ms: "deque[float]" = deque(maxlen=200)
+_search_ms: "deque[float]" = deque(maxlen=200)   # temps recherche (Meili + embedding requête)
+_llm_ms: "deque[float]" = deque(maxlen=200)      # temps génération (Claude)
 _last_ask: "float | None" = None
 
 
@@ -30,13 +32,26 @@ def record_latency_ms(ms: float) -> None:
     _latencies_ms.append(ms)
 
 
+def record_search_ms(ms: float) -> None:
+    _search_ms.append(ms)
+
+
+def record_llm_ms(ms: float) -> None:
+    _llm_ms.append(ms)
+
+
+def _avg(dq: "deque[float]"):
+    return round(sum(dq) / len(dq), 1) if dq else None
+
+
 def snapshot() -> dict:
     total = _counters["ask_total"]
-    avg = round(sum(_latencies_ms) / len(_latencies_ms), 1) if _latencies_ms else None
     return {
         "uptime_s": round(time.time() - _start),
         **_counters,
         "refusal_rate": round(_counters["ask_refused"] / total, 3) if total else None,
-        "ask_latency_ms_avg": avg,
+        "ask_latency_ms_avg": _avg(_latencies_ms),
+        "search_ms_avg": _avg(_search_ms),   # décomposition : recherche
+        "llm_ms_avg": _avg(_llm_ms),         # décomposition : génération LLM
         "last_ask_ago_s": round(time.time() - _last_ask) if _last_ask else None,
     }

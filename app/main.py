@@ -571,14 +571,18 @@ def ask(req: AskRequest, request: Request,
             )
 
     try:
+        t_s = time.time()
         hits = search.search(req.q, req.topK, req.filters)
+        metrics.record_search_ms((time.time() - t_s) * 1000)
     except Exception:
         log.exception("Meilisearch indisponible")
         metrics.incr("ask_errors")
         resp = rag.refusal("Le moteur de recherche est momentanément indisponible. Réessayez dans un instant.")
     else:
         try:
+            t_l = time.time()
             resp = rag.answer(req.q, hits, req.temperature, pedagogical=req.pedagogical)
+            metrics.record_llm_ms((time.time() - t_l) * 1000)
         except Exception:
             log.exception("Erreur LLM")
             metrics.incr("ask_errors")
