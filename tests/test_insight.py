@@ -77,6 +77,19 @@ def test_insight_store_and_profile(temp_db):
     assert insight.list_lawyers("thielen", 10)[0]["name"] == "Lex THIELEN"
 
 
+def test_lawyer_lookup(temp_db):
+    insight.record_many([
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "20200101_TAL_1", 2020, None, "A", 1, "Droit du travail"),
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "20210101_TAL_2", 2021, None, "B", 0, "Droit du travail"),
+    ])
+    res = insight.lawyer_lookup("Quels textes mentionnent l'avocat Castegnaro ?")
+    assert res is not None and "CASTEGNARO" in res["answer"].upper() and len(res["citations"]) == 2
+    # sans indice d'avocat -> None (recherche juridique normale)
+    assert insight.lawyer_lookup("Quel est le préavis de licenciement ?") is None
+    # avocat inexistant -> None
+    assert insight.lawyer_lookup("Quelles décisions pour l'avocat Zzzzxyz ?") is None
+
+
 def test_insight_gated(temp_db):
     assert client.get("/api/insight/lawyers").status_code == 401
     assert client.get("/api/insight/stats").status_code == 401

@@ -572,6 +572,23 @@ def ask(req: AskRequest, request: Request,
                 "Il se réinitialise le 1er du mois — ou passez au plan pro."
             )
 
+    # Recherche nominative d'avocat (Insight) : court-circuite le RAG si un avocat nommé correspond.
+    try:
+        look = insight.lawyer_lookup(req.q)
+    except Exception:
+        log.exception("insight lawyer_lookup")
+        look = None
+    if look:
+        resp = AskResponse(answer=look["answer"], citations=look["citations"], refused=False,
+                           status="ok", prompt_version=settings.prompt_version)
+        metrics.record_latency_ms((time.time() - t0) * 1000)
+        if user:
+            try:
+                auth.add_history(user["id"], req.q, resp.answer, resp.status)
+            except Exception:
+                log.exception("écriture historique")
+        return resp
+
     try:
         t_s = time.time()
         hits = search.search(req.q, req.topK, req.filters)
@@ -672,6 +689,26 @@ def ask_stream(req: AskRequest, request: Request,
                 media_type="text/event-stream", headers=headers)
 
     def gen():
+        # Recherche nominative d'avocat (Insight) : réponse directe si un avocat nommé correspond.
+        try:
+            look = insight.lawyer_lookup(req.q)
+        except Exception:
+            log.exception("insight lawyer_lookup")
+            look = None
+        if look:
+            yield _sse({"type": "delta", "text": look["answer"]})
+            yield _sse({"type": "meta", "answer": look["answer"],
+                        "citations": [c.model_dump() for c in look["citations"]],
+                        "refused": False, "status": "ok", "suggested_question": None,
+                        "feedback": None, "prompt_version": settings.prompt_version})
+            metrics.record_latency_ms((time.time() - t0) * 1000)
+            if user:
+                try:
+                    auth.add_history(user["id"], req.q, look["answer"], "ok")
+                except Exception:
+                    log.exception("écriture historique")
+            return
+
         try:
             t_s = time.time()
             hits = search.search(req.q, req.topK, req.filters)

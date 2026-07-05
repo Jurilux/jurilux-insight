@@ -14,6 +14,7 @@ from collections import Counter
 from typing import List, Optional
 
 from .db import get_conn
+from .schemas import Citation
 
 # --- avocats ---
 _FIRST = r"[A-ZÉÈÀÂÎÏÔÜÇ][a-zà-öø-ÿ'’.-]*"
@@ -214,3 +215,55 @@ def _cocounsel(conn_key: str, limit: int = 12) -> List[dict]:
         rel = "adversaire" if r["opp"] > r["same"] else "co-conseil" if r["same"] > r["opp"] else "confrère"
         out.append({"name_key": r["name_key"], "name": r["name"], "count": r["n"], "relation": rel})
     return out
+
+
+# ---------- recherche nominative d'avocat depuis une question en langage naturel ----------
+_LAWYER_HINT = re.compile(r"avocate?|ma[iî]tre|barreau|\bconseil\b", re.IGNORECASE)
+_Q_STRIP = re.compile(
+    r"\b(quels?|quelles?|textes?|d[ée]cisions?|affaires?|arr[êe]ts?|jugements?|dossiers?|"
+    r"mentionn\w*|cit\w*|impliqu\w*|concern\w*|trouve\w*|liste\w*|montre\w*|"
+    r"par|de|des|du|la|le|les|un|une|sur|pour|avec|est|qui|dans|corpus|"
+    r"avocate?|ma[iî]tre|conseil)\b|[’']", re.IGNORECASE)
+
+
+def _candidate_name(q: str) -> str:
+    s = _Q_STRIP.sub(" ", q or "")
+    s = re.sub(r"\b[lL]\b", " ", s)              # « l' » résiduel
+    s = re.sub(r"[^\wÀ-ÿ\s-]", " ", s)           # retire la ponctuation (?, ., etc.)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def lawyer_lookup(q: str):
+    """Si la question cherche un avocat NOMMÉ présent dans l'index, renvoie {answer, citations}.
+    Sinon None (→ recherche juridique normale). Ne route que sur une vraie correspondance."""
+    if not _LAWYER_HINT.search(q or ""):
+        return None
+    cand = _candidate_name(q)
+    if len(cand) < 3:
+        return None
+    rows = list_lawyers(cand, 6)
+    if not rows:
+        return None
+    # Plusieurs avocats distincts correspondent → demander de préciser.
+    if len(rows) > 1 and rows[1]["cases"] >= max(2, int(rows[0]["cases"] * 0.4)):
+        names = " · ".join(f"{r['name']} ({r['cases']})" for r in rows[:6])
+        return {"answer": f"Plusieurs avocats correspondent à « {cand} » : {names}.\n\n"
+                          "Précisez le nom complet pour voir la liste de leurs décisions.",
+                "citations": []}
+    prof = get_lawyer(rows[0]["name_key"])
+    if not prof:
+        return None
+    n = prof["cases_count"]
+    period = ""
+    if prof["first_year"] and prof["last_year"]:
+        period = (f" ({prof['first_year']})" if prof["first_year"] == prof["last_year"]
+                  else f" ({prof['first_year']}–{prof['last_year']})")
+    md = f"**Maître {prof['name']}** apparaît dans **{n} décision{'s' if n > 1 else ''}** du corpus{period}."
+    if prof["matters"]:
+        md += "\n\nDomaines : " + ", ".join(f"{m['name']} ({m['count']})" for m in prof["matters"][:4]) + "."
+    shown = prof["cases"][:25]
+    md += (f"\n\nVoici {'les' if n <= 25 else 'les 25 décisions les plus récentes'} — "
+           "chaque source ouvre le PDF de la décision.")
+    cites = [Citation(doc_id=c["doc_id"], source_type="jurisprudence",
+                      year=c["year"], juridiction_key=c["juridiction_key"], content="") for c in shown]
+    return {"answer": md, "citations": cites}
