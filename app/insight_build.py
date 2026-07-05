@@ -1,8 +1,7 @@
-"""Construit l'index Insight (avocats) : scanne l'index Meili `chunks`, extrait les avocats
-de chaque décision de jurisprudence, remplit la table insight_appearances.
+"""Construit l'index Insight (avocats) : scanne l'index Meili `chunks`, agrège par décision
+(avocats + côté + issue du dispositif), calcule le gagné/perdu ESTIMÉ, remplit insight_appearances.
 
-Lancé ponctuellement (après un rafraîchissement du corpus) :
-    docker compose run --rm api python -m app.insight_build
+Lancé après un refresh du corpus :  docker compose run --rm api python -m app.insight_build
 """
 import json
 import urllib.request
@@ -23,32 +22,51 @@ def _fetch(offset: int, limit: int) -> list:
 
 def run() -> dict:
     db.init_db()
-    with db.get_conn() as conn:  # reconstruction complète (idempotent)
+    with db.get_conn() as conn:
         conn.execute("DELETE FROM insight_appearances")
-    offset = total = inserted = 0
-    seen = set()  # (name_key, doc_id) déjà vus (un avocat peut apparaître dans plusieurs chunks d'une décision)
+
+    acc: dict = {}  # doc_id -> {year, jur, lawyers:{key:{display,side}}, outcome}
+    offset = total = 0
     while True:
         docs = _fetch(offset, BATCH)
         if not docs:
             break
-        rows = []
         for d in docs:
             if d.get("source_type") != "jurisprudence" or not d.get("doc_id"):
                 continue
             doc_id = d["doc_id"]
-            for name in insight.extract_lawyers(d.get("text") or ""):
-                k = insight.name_key(name)
-                if (k, doc_id) in seen:
-                    continue
-                seen.add((k, doc_id))
-                rows.append((k, name, doc_id, d.get("year"), d.get("juridiction_key")))
-        inserted += insight.record_many(rows)
+            parsed = insight.parse_chunk(d.get("text") or "")
+            e = acc.get(doc_id)
+            if e is None:
+                e = acc[doc_id] = {"year": d.get("year"), "jur": d.get("juridiction_key"),
+                                   "lawyers": {}, "outcome": None}
+            for k, v in parsed["lawyers"].items():
+                cur = e["lawyers"].get(k)
+                if cur is None:
+                    e["lawyers"][k] = {"display": v["display"], "side": v["side"]}
+                elif cur["side"] is None and v["side"]:
+                    cur["side"] = v["side"]
+            if parsed["outcome"] and not e["outcome"]:
+                e["outcome"] = parsed["outcome"]
         total += len(docs)
         offset += BATCH
-        if offset % 50000 == 0:
-            print(f"  {offset} chunks scannés, {inserted} apparitions enregistrées", flush=True)
+        if offset % 100000 == 0:
+            print(f"  {offset} chunks scannés, {len(acc)} décisions", flush=True)
+
+    rows = []
+    for doc_id, e in acc.items():
+        for k, v in e["lawyers"].items():
+            won = None
+            if v["side"] and e["outcome"]:
+                won = 1 if v["side"] == e["outcome"] else 0
+            rows.append((k, v["display"], doc_id, e["year"], e["jur"], v["side"], won))
+
+    inserted = 0
+    for i in range(0, len(rows), 5000):
+        inserted += insight.record_many(rows[i:i + 5000])
     out = insight.stats()
-    print(f"terminé : {total} chunks scannés → {out['lawyers']} avocats, {out['appearances']} apparitions")
+    print(f"terminé : {total} chunks, {len(acc)} décisions → {out['lawyers']} avocats, "
+          f"{out['appearances']} apparitions ({inserted} insérées)")
     return out
 
 

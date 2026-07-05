@@ -33,20 +33,32 @@ def test_name_key_groups_variants():
     assert insight.name_key("François KREMER") == insight.name_key("Francois  KREMER")
 
 
+def test_parse_chunk_side_and_outcome():
+    txt = ("ENTRE la société X, demanderesse, représentée par Maître Guy CASTEGNARO, avocat, "
+           "ET la société Y, défenderesse, représentée par Maître Lex THIELEN, avocat. "
+           "Par ces motifs, déboute la demanderesse de sa demande, condamne aux dépens.")
+    p = insight.parse_chunk(txt)
+    assert p["lawyers"][insight.name_key("Guy CASTEGNARO")]["side"] == "A"
+    assert p["lawyers"][insight.name_key("Lex THIELEN")]["side"] == "B"
+    assert p["outcome"] == "B"  # « déboute » la demanderesse -> côté B l'emporte
+
+
 def test_insight_store_and_profile(temp_db):
     insight.record_many([
-        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d1", 2020, "csj"),
-        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d2", 2021, "tal"),
-        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d2", 2021, "tal"),  # doublon -> ignoré (UNIQUE)
-        ("LEX THIELEN", "Lex THIELEN", "d1", 2020, "csj"),
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d1", 2020, "csj", "A", 1),
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d2", 2021, "tal", "B", 0),
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d2", 2021, "tal", "B", 0),  # doublon -> ignoré (UNIQUE)
+        ("LEX THIELEN", "Lex THIELEN", "d1", 2020, "csj", "B", 0),
     ])
     top = insight.list_lawyers(None, 10)
     assert top[0]["name"] == "Guy CASTEGNARO" and top[0]["cases"] == 2
     assert insight.stats() == {"lawyers": 2, "appearances": 3}
     prof = insight.get_lawyer("GUY CASTEGNARO")
-    assert prof["cases_count"] == 2 and prof["first_year"] == 2020 and prof["last_year"] == 2021
-    assert len(prof["jurisdictions"]) == 2
-    # recherche
+    assert prof["cases_count"] == 2 and prof["won"] == 1 and prof["lost"] == 1 and prof["decided"] == 2
+    assert prof["as_demandeur"] == 1 and prof["as_defendeur"] == 1
+    # réseau : THIELEN co-cité dans d1, côté opposé -> adversaire
+    assert prof["cocounsel"][0]["name"] == "Lex THIELEN"
+    assert prof["cocounsel"][0]["count"] == 1 and prof["cocounsel"][0]["relation"] == "adversaire"
     assert insight.list_lawyers("thielen", 10)[0]["name"] == "Lex THIELEN"
 
 

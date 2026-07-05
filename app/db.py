@@ -114,9 +114,12 @@ CREATE TABLE IF NOT EXISTS insight_appearances (
     doc_id          TEXT NOT NULL,
     year            INTEGER,
     juridiction_key TEXT,
+    side            TEXT,               -- 'A' (demandeur/appelant) | 'B' (défendeur/intimé) | NULL
+    won             INTEGER,            -- 1 gagné (estimé) | 0 perdu (estimé) | NULL indéterminé
     UNIQUE(name_key, doc_id)
 );
 CREATE INDEX IF NOT EXISTS idx_insight_name ON insight_appearances(name_key);
+CREATE INDEX IF NOT EXISTS idx_insight_doc ON insight_appearances(doc_id);
 CREATE INDEX IF NOT EXISTS idx_history_user ON history(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback ON feedback(id DESC);
@@ -145,6 +148,8 @@ def init_db() -> None:
         for ddl in (
             "ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'student'",
             "ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE insight_appearances ADD COLUMN side TEXT",     # 'A' (demandeur/appelant) | 'B' (défendeur/intimé)
+            "ALTER TABLE insight_appearances ADD COLUMN won INTEGER",   # 1 gagné (estimé) | 0 perdu | NULL indéterminé
         ):
             try:
                 conn.execute(ddl)
