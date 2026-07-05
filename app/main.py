@@ -273,6 +273,55 @@ def add_dossier_item(did: int, body: DossierItemAdd,
     return ws.add_item(did, body.question, body.answer, cites, body.status, user["id"])
 
 
+class RoleUpdate(BaseModel):
+    role: str
+
+
+@app.post("/api/workspaces/{wid}/members/{uid}/role")
+def set_member_role(wid: int, uid: int, body: RoleUpdate,
+                    authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _require_ws_role(wid, user, ("owner", "admin"))
+    if user["id"] == uid:
+        raise HTTPException(status_code=400, detail="Vous ne pouvez pas changer votre propre rôle")
+    try:
+        if not ws.set_member_role(wid, uid, body.role):
+            raise HTTPException(status_code=404, detail="Membre introuvable (ou propriétaire)")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@app.delete("/api/workspaces/{wid}")
+def delete_workspace(wid: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _require_ws_role(wid, user, ("owner",))  # propriétaire uniquement
+    ws.delete_workspace(wid)
+    return {"ok": True}
+
+
+@app.post("/api/workspaces/{wid}/leave")
+def leave_workspace(wid: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    role = _require_ws_role(wid, user, ws.ROLES)
+    if role == "owner":
+        raise HTTPException(status_code=400,
+                            detail="Le propriétaire ne peut pas quitter le cabinet ; supprimez-le à la place")
+    ws.remove_member(wid, user["id"])
+    return {"ok": True}
+
+
+@app.delete("/api/dossiers/{did}")
+def delete_dossier(did: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    wid = ws.dossier_workspace(did)
+    if wid is None:
+        raise HTTPException(status_code=404, detail="Dossier introuvable")
+    _require_ws_role(wid, user, ("owner", "admin"))
+    ws.delete_dossier(did)
+    return {"ok": True}
+
+
 @app.get("/api/me")
 def me(authorization: Optional[str] = Header(None)) -> dict:
     user = _require_user(authorization)

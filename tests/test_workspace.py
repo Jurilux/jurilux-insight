@@ -82,6 +82,42 @@ def test_shared_dossiers(temp_db):
     assert client.get(f"/api/dossiers/{did}/items", headers=_h(ext)).status_code in (403, 404)
 
 
+def test_workspace_management(temp_db):
+    owner = _tok("own@c.lu")
+    alice = _tok("al@c.lu")
+    wid = client.post("/api/workspaces", json={"name": "C"}, headers=_h(owner)).json()["id"]
+    client.post(f"/api/workspaces/{wid}/members", json={"email": "al@c.lu", "role": "member"}, headers=_h(owner))
+    uid_alice = next(m["user_id"] for m in
+                     client.get(f"/api/workspaces/{wid}/members", headers=_h(owner)).json()["items"]
+                     if m["email"] == "al@c.lu")
+
+    # owner promeut alice admin ; ne peut pas changer son propre rôle
+    assert client.post(f"/api/workspaces/{wid}/members/{uid_alice}/role",
+                       json={"role": "admin"}, headers=_h(owner)).status_code == 200
+    uid_owner = next(m["user_id"] for m in
+                     client.get(f"/api/workspaces/{wid}/members", headers=_h(owner)).json()["items"]
+                     if m["role"] == "owner")
+    assert client.post(f"/api/workspaces/{wid}/members/{uid_owner}/role",
+                       json={"role": "member"}, headers=_h(owner)).status_code == 400
+
+    # dossier : créer puis supprimer (admin)
+    did = client.post(f"/api/workspaces/{wid}/dossiers", json={"name": "D"}, headers=_h(owner)).json()["id"]
+    assert client.delete(f"/api/dossiers/{did}", headers=_h(owner)).status_code == 200
+    assert len(client.get(f"/api/workspaces/{wid}/dossiers", headers=_h(owner)).json()["items"]) == 0
+
+    # alice (non-owner) quitte ; owner ne peut pas quitter
+    assert client.post(f"/api/workspaces/{wid}/leave", headers=_h(alice)).status_code == 200
+    assert client.post(f"/api/workspaces/{wid}/leave", headers=_h(owner)).status_code == 400
+    assert len(client.get("/api/workspaces", headers=_h(alice)).json()["items"]) == 0
+
+    # suppression du cabinet : propriétaire uniquement
+    bob = _tok("bob@c.lu")
+    client.post(f"/api/workspaces/{wid}/members", json={"email": "bob@c.lu", "role": "member"}, headers=_h(owner))
+    assert client.delete(f"/api/workspaces/{wid}", headers=_h(bob)).status_code in (403, 404)
+    assert client.delete(f"/api/workspaces/{wid}", headers=_h(owner)).status_code == 200
+    assert len(client.get("/api/workspaces", headers=_h(owner)).json()["items"]) == 0
+
+
 def test_workspace_requires_auth(temp_db):
     assert client.get("/api/workspaces").status_code == 401
     assert client.post("/api/workspaces", json={"name": "X"}).status_code == 401

@@ -86,12 +86,34 @@ def remove_member(workspace_id: int, user_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def set_member_role(workspace_id: int, user_id: int, role: str) -> bool:
+    if role not in ("admin", "member"):
+        raise ValueError("rôle invalide (admin | member)")
+    with get_conn() as conn:
+        cur = conn.execute("UPDATE workspace_members SET role = ? WHERE workspace_id = ? "
+                           "AND user_id = ? AND role != 'owner'", (role, workspace_id, user_id))
+        return cur.rowcount > 0
+
+
+def delete_workspace(workspace_id: int) -> bool:
+    # Cascade : membres, dossiers, items (ON DELETE CASCADE + PRAGMA foreign_keys ON).
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+        return cur.rowcount > 0
+
+
 # ---------- dossiers ----------
 def create_dossier(workspace_id: int, name: str, created_by: int) -> dict:
     with get_conn() as conn:
         cur = conn.execute("INSERT INTO dossiers(workspace_id, name, created_by, created_at) "
                            "VALUES (?,?,?,?)", (workspace_id, name.strip(), created_by, _now()))
     return {"id": cur.lastrowid, "name": name.strip(), "items": 0}
+
+
+def delete_dossier(dossier_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM dossiers WHERE id = ?", (dossier_id,))
+        return cur.rowcount > 0
 
 
 def list_dossiers(workspace_id: int) -> List[dict]:
