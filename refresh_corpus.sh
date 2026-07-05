@@ -57,4 +57,7 @@ curl -s -X PUT "$MEILI/indexes/corpus_meta/documents" \
 #    (push automatique in-app — les utilisateurs voient le badge à leur prochaine connexion).
 $COMPOSE run --rm api python -m app.alert_runner || echo "WARN check alertes"
 
+# 6. Insight : reconstruire l'index des avocats (profiling) à partir du corpus à jour.
+$COMPOSE run --rm api python -m app.insight_build || echo "WARN build insight"
+
 echo "== $(date -Is) refresh terminé : $DEC décisions, $TXT textes, maj $UPD =="
