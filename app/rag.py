@@ -11,12 +11,21 @@ import anthropic
 
 from .config import settings
 from .schemas import AskResponse, Citation, Feedback
-from .search import Hit
+from .search import Hit, corpus_overview
 
 SYSTEM_PROMPT = """Tu es Jurilux, assistant juridique spécialisé en droit luxembourgeois.
-Tu réponds UNIQUEMENT à partir des extraits fournis (jurisprudence luxembourgeoise et textes de Legilux).
+Pour les questions de DROIT, tu réponds à partir des extraits fournis (jurisprudence luxembourgeoise
+et textes de Legilux). Pour les questions sur JURILUX lui-même (l'outil, son corpus, tes capacités),
+tu réponds à partir du bloc « À PROPOS DE JURILUX » fourni.
 
 Règles :
+- QUESTION MÉTA / CONVERSATIONNELLE (sur Jurilux, son corpus, son périmètre, son ampleur, son
+  fonctionnement, tes capacités ; ou « bonjour », « que sais-tu faire », « combien de textes as-tu ») :
+  réponds NORMALEMENT et utilement à partir du bloc « À PROPOS DE JURILUX », status="ok", used_doc_ids=[],
+  ne refuse JAMAIS et n'exige pas d'extrait juridique. Si l'info précise demandée n'y figure pas
+  (ex. répartition par discipline/matière, non suivie), dis-le honnêtement et donne ce que tu sais
+  (totaux, composition du corpus, comment explorer une matière). Ne confonds pas « je n'ai pas cette
+  statistique » avec un refus juridique.
 - Réponds en français, de façon structurée et sourcée.
 - Chaque affirmation juridique doit citer sa source via son doc_id.
 - Cite le TEXTE lui-même en priorité : quand un extrait de type « law » (loi, code,
@@ -75,6 +84,32 @@ PEDAGOGICAL_SUFFIX = """
 MODE PÉDAGOGIQUE (étudiant) : structure la réponse de façon didactique en trois temps —
 1) le principe juridique en jeu, 2) le texte applicable, 3) son application par la
 jurisprudence. Définis les termes techniques et explique le raisonnement, sans jargon inutile."""
+
+
+def _about_block() -> str:
+    """Faits sur Jurilux + composition du corpus, pour répondre aux questions méta
+    (sur l'outil), pas sur le droit lui-même."""
+    try:
+        c = corpus_overview()
+    except Exception:
+        c = {}
+    dec, txt, prj = c.get("decisions"), c.get("texts"), c.get("projets")
+    upd, yr = c.get("updated"), c.get("latest_year")
+    return (
+        "À PROPOS DE JURILUX (pour répondre aux questions sur l'OUTIL/le CORPUS, pas sur le droit) :\n"
+        "- Jurilux : assistant de recherche juridique luxembourgeois. Question en langage naturel → "
+        "réponse sourcée croisant jurisprudence (open-data data.public.lu) et textes Legilux, "
+        "chaque source vérifiable (lien vers le PDF).\n"
+        f"- Corpus indexé : {dec} décisions de jurisprudence ; {txt} textes de loi CONSOLIDÉS "
+        "(lois, règlements grand-ducaux, codes — dernière version de chacun) ; "
+        f"{prj} projets de loi. À jour au {upd}, dernière année couverte {yr}.\n"
+        "- Le corpus n'est PAS catégorisé par discipline/matière : il n'existe pas de compteur par "
+        "branche du droit (travail, famille, pénal, civil…). Les textes couvrent l'ensemble de la "
+        "législation consolidée. Pour explorer une matière, poser une question juridique dessus ; "
+        "des filtres (année, juridiction, type de source) sont disponibles.\n"
+        "- Capacités : réponses sourcées avec citations → PDF, mode pédagogique (étudiant), filtres, "
+        "espaces de travail/dossiers partagés, alertes de veille. Ne remplace pas un avis d'avocat."
+    )
 
 
 def _context_block(hits: list[Hit]) -> str:
@@ -137,7 +172,9 @@ def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = Fals
         system=SYSTEM_PROMPT + (PEDAGOGICAL_SUFFIX if pedagogical else ""),
         messages=[{
             "role": "user",
-            "content": f"Extraits du corpus :\n\n{_context_block(hits)}\n\nQuestion : {q}",
+            "content": (f"{_about_block()}\n\n"
+                        f"=== Extraits du corpus (pour les questions de DROIT) ===\n\n"
+                        f"{_context_block(hits)}\n\nQuestion : {q}"),
         }],
     )
     raw = "".join(b.text for b in msg.content if b.type == "text")
