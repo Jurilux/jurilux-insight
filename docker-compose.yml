@@ -47,6 +47,8 @@ services:
       MEILI_INDEX: ${MEILI_INDEX:-chunks}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?définir ANTHROPIC_API_KEY dans .env}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5}
+      # Embedder la requête UNE fois pour les 2 sous-recherches fédérées (perf recherche).
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       PROMPT_VERSION: ${PROMPT_VERSION:-rebuild-2026-07-v1}
       # Recherche hybride (sémantique + mots-clés). 0 = mots-clés seuls.
       # 0.5 activé le 2026-07-04 : embedder OpenAI sur lois+projets (~109k chunks)

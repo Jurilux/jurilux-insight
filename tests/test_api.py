@@ -158,7 +158,7 @@ def test_metrics_endpoint(monkeypatch):
 
 
 def test_search_federated_includes_law(monkeypatch):
-    def fake(q, limit, expr):
+    def fake(q, limit, expr, vector=None):
         st = 'law' if (expr and 'law' in expr) else 'jurisprudence'
         return [Hit(chunk_id=f"{st}{i}", doc_id=f"{st}-{i}", text="x", source_type=st)
                 for i in range(limit)]

@@ -6,6 +6,8 @@ Index `chunks` — un document par chunk :
 Filterable : year, juridiction_key, source_type. Searchable : text, title.
 """
 import datetime
+import json
+import urllib.request
 from dataclasses import dataclass
 from typing import Optional
 
@@ -13,6 +15,25 @@ import meilisearch
 
 from .config import settings
 from .schemas import SearchFilters
+
+
+def _embed_query(q: str) -> Optional[list]:
+    """Embedde la requête UNE fois (OpenAI text-embedding-3-small), pour la réutiliser sur
+    les 2 sous-recherches fédérées (évite 2 embeddings côté Meili). None si indisponible
+    → repli : Meili embedde lui-même (comportement inchangé)."""
+    key = settings.openai_api_key
+    if not key:
+        return None
+    try:
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/embeddings",
+            data=json.dumps({"model": "text-embedding-3-small", "input": q}).encode(),
+            headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())["data"][0]["embedding"]
+    except Exception:
+        return None
 
 
 @dataclass
@@ -139,7 +160,7 @@ def _hits_from(res: dict) -> list[Hit]:
     return out
 
 
-def _search_one(q: str, limit: int, expr: Optional[str]) -> list[Hit]:
+def _search_one(q: str, limit: int, expr: Optional[str], vector: Optional[list] = None) -> list[Hit]:
     params: dict = {"limit": limit}
     if expr:
         params["filter"] = expr
@@ -147,13 +168,18 @@ def _search_one(q: str, limit: int, expr: Optional[str]) -> list[Hit]:
     if settings.hybrid_semantic_ratio > 0:
         params["hybrid"] = {"embedder": "default",
                             "semanticRatio": settings.hybrid_semantic_ratio}
+        if vector is not None:  # vecteur pré-calculé → Meili ne ré-embedde pas la requête
+            params["vector"] = vector
     return _hits_from(_client().index(settings.meili_index).search(q, params))
 
 
 def search(q: str, top_k: int, filters: SearchFilters) -> list[Hit]:
+    # Embedde la requête une seule fois si l'hybride est actif (réutilisé par les sous-recherches).
+    vec = _embed_query(q) if settings.hybrid_semantic_ratio > 0 else None
+
     # Filtre de type explicite (jurisprudence|law|projet_loi) → on le respecte tel quel.
     if filters.source_type:
-        return _search_one(q, top_k, _filter_expr(filters))
+        return _search_one(q, top_k, _filter_expr(filters), vec)
 
     # Sinon : recherche FÉDÉRÉE. Le corpus est ~92 % jurisprudence ; une recherche
     # simple ne remonte jamais de textes de loi. On interroge jurisprudence et lois
@@ -163,7 +189,7 @@ def search(q: str, top_k: int, filters: SearchFilters) -> list[Hit]:
     def sub(st: str) -> list[Hit]:
         f = SearchFilters(year_min=filters.year_min, year_max=filters.year_max,
                           juridiction_key=filters.juridiction_key, source_type=st)
-        return _search_one(q, top_k, _filter_expr(f))
+        return _search_one(q, top_k, _filter_expr(f), vec)
 
     juris, laws = sub("jurisprudence"), sub("law")
     # Entrelacement 1:1 : le contexte contient autant de textes que de jurisprudence,
