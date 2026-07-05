@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import (admin, alert as alert_store, alert_runner, auth, db, feedback as fb_store,
-               metrics, rag, search, share as share_store, workspace as ws)
+               insight, metrics, rag, search, share as share_store, workspace as ws)
 from .config import settings
 from .schemas import (AskRequest, AskResponse, DossierCreate, DossierItemAdd, FeedbackIn,
                       MemberAdd, SearchFilters, ShareIn, WorkspaceCreate)
@@ -602,6 +602,29 @@ def ask(req: AskRequest, request: Request,
         except Exception:
             log.exception("écriture historique")
     return resp
+
+
+# ---------- Insight : profiling des AVOCATS (données publiques, usage interne, gate admin) ----------
+@app.get("/api/insight/stats")
+def insight_stats(authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    return insight.stats()
+
+
+@app.get("/api/insight/lawyers")
+def insight_lawyers(q: Optional[str] = None, limit: int = 50,
+                    authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    return {"items": insight.list_lawyers(q, limit)}
+
+
+@app.get("/api/insight/lawyers/{key}")
+def insight_lawyer(key: str, authorization: Optional[str] = Header(None)) -> dict:
+    _require_admin(authorization)
+    prof = insight.get_lawyer(key)
+    if not prof:
+        raise HTTPException(status_code=404, detail="Avocat introuvable")
+    return prof
 
 
 def _sse(event: dict) -> str:

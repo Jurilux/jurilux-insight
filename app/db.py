@@ -105,6 +105,18 @@ CREATE TABLE IF NOT EXISTS alert_hits (
     created_at      TEXT NOT NULL,
     UNIQUE(alert_id, doc_id)
 );
+-- Insight : profiling des AVOCATS uniquement (données publiques de jurisprudence).
+-- Une ligne = un avocat présent dans une décision (dédupliqué par (name_key, doc_id)).
+CREATE TABLE IF NOT EXISTS insight_appearances (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name_key        TEXT NOT NULL,      -- clé normalisée (majuscules, sans accents) pour regrouper les variantes
+    display_name    TEXT NOT NULL,      -- forme lisible affichée
+    doc_id          TEXT NOT NULL,
+    year            INTEGER,
+    juridiction_key TEXT,
+    UNIQUE(name_key, doc_id)
+);
+CREATE INDEX IF NOT EXISTS idx_insight_name ON insight_appearances(name_key);
 CREATE INDEX IF NOT EXISTS idx_history_user ON history(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback ON feedback(id DESC);
