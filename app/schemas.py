@@ -1,5 +1,5 @@
 """Modèles Pydantic — contrat exact attendu par jurilux-web/src/api.ts."""
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -11,12 +11,18 @@ class SearchFilters(BaseModel):
     source_type: Optional[str] = None  # jurisprudence | law | projet_loi
 
 
+class Turn(BaseModel):
+    role: str          # 'user' | 'assistant'
+    content: str
+
+
 class AskRequest(BaseModel):
     q: str = Field(min_length=1)
     topK: int = Field(default=20, ge=1, le=100)
     temperature: float = Field(default=0.0, ge=0.0, le=1.0)
     filters: SearchFilters = Field(default_factory=SearchFilters)
     pedagogical: bool = False  # mode étudiant : réponse didactique
+    history: Optional[List["Turn"]] = None  # tours précédents de la session (contexte conversationnel)
 
 
 class Citation(BaseModel):

@@ -544,6 +544,15 @@ def admin_questions(limit: int = 100,
     return {"items": admin.recent_questions(min(max(limit, 1), 500))}
 
 
+def _contextual_query(req: AskRequest) -> str:
+    """Requête de recherche enrichie du dernier tour utilisateur (pour les questions de suivi)."""
+    if req.history:
+        prev = [t.content for t in req.history if t.role == "user" and t.content]
+        if prev:
+            return (prev[-1] + " " + req.q)[:500]
+    return req.q
+
+
 @app.post("/api/ask", response_model=AskResponse, response_model_exclude_none=False)
 def ask(req: AskRequest, request: Request,
         authorization: Optional[str] = Header(None)) -> AskResponse:
@@ -591,7 +600,7 @@ def ask(req: AskRequest, request: Request,
 
     try:
         t_s = time.time()
-        hits = search.search(req.q, req.topK, req.filters)
+        hits = search.search(_contextual_query(req), req.topK, req.filters)
         metrics.record_search_ms((time.time() - t_s) * 1000)
     except Exception:
         log.exception("Meilisearch indisponible")
@@ -600,7 +609,7 @@ def ask(req: AskRequest, request: Request,
     else:
         try:
             t_l = time.time()
-            resp = rag.answer(req.q, hits, req.temperature, pedagogical=req.pedagogical)
+            resp = rag.answer(req.q, hits, req.temperature, pedagogical=req.pedagogical, history=req.history)
             metrics.record_llm_ms((time.time() - t_l) * 1000)
         except Exception:
             log.exception("Erreur LLM")
@@ -711,7 +720,7 @@ def ask_stream(req: AskRequest, request: Request,
 
         try:
             t_s = time.time()
-            hits = search.search(req.q, req.topK, req.filters)
+            hits = search.search(_contextual_query(req), req.topK, req.filters)
             metrics.record_search_ms((time.time() - t_s) * 1000)
         except Exception:
             log.exception("Meilisearch indisponible")
@@ -722,7 +731,7 @@ def ask_stream(req: AskRequest, request: Request,
         final = None
         t_l = time.time()
         try:
-            for ev in rag.answer_stream(req.q, hits, req.temperature, pedagogical=req.pedagogical):
+            for ev in rag.answer_stream(req.q, hits, req.temperature, pedagogical=req.pedagogical, history=req.history):
                 if ev.get("type") == "meta":
                     final = ev
                 yield _sse(ev)

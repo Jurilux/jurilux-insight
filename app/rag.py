@@ -223,7 +223,32 @@ def _user_content(q: str, hits: list[Hit]) -> str:
             f"{_context_block(hits)}\n\nQuestion : {q}")
 
 
-def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = False) -> AskResponse:
+def _build_messages(history, user_content: str) -> list:
+    """Messages Claude : tours précédents de la session (contexte conversationnel) + question courante.
+    Anthropic exige d'alterner user/assistant en commençant par user — on nettoie l'historique."""
+    raw = []
+    for turn in (history or [])[-6:]:
+        role = getattr(turn, "role", None)
+        content = getattr(turn, "content", None)
+        if role in ("user", "assistant") and content:
+            raw.append({"role": role, "content": content[:1500]})
+    clean = []
+    for m in raw:
+        if not clean:
+            if m["role"] == "user":
+                clean.append(m)          # doit commencer par user
+        elif m["role"] != clean[-1]["role"]:
+            clean.append(m)
+        else:
+            clean[-1] = m                # même rôle consécutif → garde le plus récent
+    if clean and clean[-1]["role"] == "user":
+        clean.pop()                      # le tour précédant la question courante doit être assistant
+    clean.append({"role": "user", "content": user_content})
+    return clean
+
+
+def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = False,
+           history=None) -> AskResponse:
     if not hits:
         return refusal(
             "Aucun document pertinent trouvé dans le corpus pour cette question "
@@ -236,7 +261,7 @@ def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = Fals
         max_tokens=settings.anthropic_max_tokens,
         temperature=temperature,
         system=_system_blocks(SYSTEM_PROMPT, pedagogical),
-        messages=[{"role": "user", "content": _user_content(q, hits)}],
+        messages=_build_messages(history, _user_content(q, hits)),
     )
     raw = "".join(b.text for b in msg.content if b.type == "text")
     data = _extract_json(raw)
@@ -279,7 +304,7 @@ def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = Fals
     )
 
 
-def answer_stream(q: str, hits: list[Hit], temperature: float, pedagogical: bool = False):
+def answer_stream(q: str, hits: list[Hit], temperature: float, pedagogical: bool = False, history=None):
     """Générateur de streaming. Yield des events :
       {"type":"delta","text": ...}  — morceaux de la réponse (markdown), à afficher en direct
       {"type":"meta", ...}          — méta finale (citations, refused, status, suggested_question, feedback)
@@ -305,7 +330,7 @@ def answer_stream(q: str, hits: list[Hit], temperature: float, pedagogical: bool
         max_tokens=settings.anthropic_max_tokens,
         temperature=temperature,
         system=_system_blocks(SYSTEM_PROMPT_STREAM, pedagogical),
-        messages=[{"role": "user", "content": _user_content(q, hits)}],
+        messages=_build_messages(history, _user_content(q, hits)),
     ) as stream:
         for chunk in stream.text_stream:
             if delim_seen:
