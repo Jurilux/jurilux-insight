@@ -22,9 +22,8 @@ def _fetch(offset: int, limit: int) -> list:
 
 def run() -> dict:
     db.init_db()
-    with db.get_conn() as conn:
-        conn.execute("DELETE FROM insight_appearances")
-
+    # NB : on ne vide PAS la table maintenant. L'ancien index reste servi pendant tout le scan ;
+    # le remplacement (DELETE + INSERT) se fait en une seule transaction à la fin (gap ~ secondes).
     acc: dict = {}  # doc_id -> {year, jur, lawyers:{key:{display,side}}, outcome}
     offset = total = 0
     while True:
@@ -61,9 +60,13 @@ def run() -> dict:
                 won = 1 if v["side"] == e["outcome"] else 0
             rows.append((k, v["display"], doc_id, e["year"], e["jur"], v["side"], won))
 
-    inserted = 0
-    for i in range(0, len(rows), 5000):
-        inserted += insight.record_many(rows[i:i + 5000])
+    # Remplacement atomique : l'ancien index disparaît puis réapparaît en une transaction.
+    with db.get_conn() as conn:
+        conn.execute("DELETE FROM insight_appearances")
+        conn.executemany(
+            "INSERT OR IGNORE INTO insight_appearances "
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won) VALUES (?,?,?,?,?,?,?)", rows)
+        inserted = conn.total_changes
     out = insight.stats()
     print(f"terminé : {total} chunks, {len(acc)} décisions → {out['lawyers']} avocats, "
           f"{out['appearances']} apparitions ({inserted} insérées)")
