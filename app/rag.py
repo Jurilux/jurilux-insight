@@ -261,9 +261,11 @@ def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = Fals
     suggested = suggested.strip() if isinstance(suggested, str) and suggested.strip() else None
 
     if data.get("refused"):
-        # Refus « doux » : pistes (sources proches) + question-pivot + reformulations.
+        # Refus « doux » (dans le périmètre) : pistes + reformulations. Hors-sujet (aucune piste,
+        # aucune reformulation) : aucune source.
+        soft = bool(suggested or feedback.how_to_improve)
         return AskResponse(
-            answer=None, citations=_pistes(hits), refused=True, status="ok",
+            answer=None, citations=_pistes(hits) if soft else [], refused=True, status="ok",
             feedback=feedback, suggested_question=suggested,
             prompt_version=settings.prompt_version,
         )
