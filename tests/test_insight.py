@@ -219,6 +219,37 @@ def test_firm_endpoints(temp_db):
     assert client.get("/api/insight/firms/ZZZ").status_code == 404
 
 
+def test_extract_articles_and_sens():
+    arts = insight.extract_articles("Vu l'article L.124-10 du Code du travail, art. 579")
+    assert "L.124-10" in arts and "579" in arts
+    assert insight.extract_articles("aucun article ici") == []
+    assert insight.extract_sens("PAR CES MOTIFS, rejette le pourvoi") == "rejet"
+    assert insight.extract_sens("casse et annule l'arrêt") == "cassation"
+    assert insight.extract_sens("confirme le jugement entrepris") == "confirmation"
+    assert insight.extract_sens("réforme la décision") == "réformation"
+    assert insight.extract_sens("sans dispositif") is None
+
+
+def test_articles_sens_storage(temp_db):
+    insight.record_many([
+        ("A A", "Anne A", "d1", 2020, "csj", "A", 1, "Droit du travail", None, None, ["L.124-10", "1134"], "confirmation"),
+        ("B B", "Bob B", "d1", 2020, "csj", "B", 0, "Droit du travail", None, None, ["L.124-10", "1134"], "confirmation"),
+        ("A A", "Anne A", "d2", 2021, "tal", "A", 1, "Bail / logement", None, None, "1719", "cassation"),
+    ])
+    # top_articles : compte par DÉCISION distincte (d1 a 2 avocats → 1 décision pour L.124-10).
+    ta = {a["article"]: a["decisions"] for a in insight.top_articles()}
+    assert ta["L.124-10"] == 1 and ta["1134"] == 1 and ta["1719"] == 1
+    # articles (liste jointe) + sens exposés dans les décisions du profil.
+    cases = {c["doc_id"]: c for c in insight.get_lawyer("A A")["cases"]}
+    assert cases["d1"]["articles"] == "L.124-10; 1134" and cases["d1"]["sens"] == "confirmation"
+    assert cases["d2"]["sens"] == "cassation"
+    # endpoint public.
+    assert client.get("/api/insight/articles").status_code == 200
+    # Rétrocompat : tuples courts (8/10 champs) toujours acceptés → articles/sens NULL.
+    insight.record_many([("C C", "Carl C", "d9", 2022, "csj", "A", 1, "Pénal")])
+    assert insight.get_lawyer("C C")["cases"][0]["articles"] is None
+
+
 def test_rgpd_request(temp_db):
     # Demande valide (opposition) -> enregistrée et listable par un admin.
     ok = client.post("/api/insight/rgpd-request",

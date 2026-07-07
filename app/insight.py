@@ -84,6 +84,52 @@ def _median(vals: List[float]) -> Optional[float]:
     return round(s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2, 2)
 
 
+# --- articles de loi visés : extraction déterministe des références « article X » ---
+# Gère « article L.124-10 », « articles 1134 et 1135 », « art. 579 » ; normalise « L.124-10 ».
+_ARTICLE_RE = re.compile(
+    r"\b(?:art\.?|articles?)\s+((?:[LR]\.?\s?)?\d+(?:[-.]\d+)*"
+    r"(?:\s*(?:,|et)\s*(?:[LR]\.?\s?)?\d+(?:[-.]\d+)*)*)", re.IGNORECASE)
+_ART_NUM = re.compile(r"(?:[LR]\.?\s?)?\d+(?:[-.]\d+)*")
+
+
+def _norm_article(raw: str) -> str:
+    a = re.sub(r"\s+", "", raw).upper().replace("L", "L.").replace("R", "R.").replace("..", ".")
+    return a.strip(".-")
+
+
+def extract_articles(text: str) -> List[str]:
+    """Références d'articles citées (dédupliquées, ordre d'apparition, plafonnées).
+    Sert à relier une décision aux textes de loi qu'elle vise."""
+    out: List[str] = []
+    for m in _ARTICLE_RE.finditer(text or ""):
+        for piece in _ART_NUM.findall(m.group(1)):
+            a = _norm_article(piece)
+            if len(a) >= 2 and a not in out:
+                out.append(a)
+        if len(out) >= 25:
+            break
+    return out
+
+
+# --- sens de la décision (dispositif) : signal d'issue plus fiable que l'heuristique A/B ---
+_SENS = [
+    ("cassation", re.compile(r"casse(?:\s+et\s+annule)?", re.I)),
+    ("rejet", re.compile(r"rejette\s+le\s+pourvoi|rejette\s+le\s+recours", re.I)),
+    ("irrecevabilité", re.compile(r"d[ée]clare\s+.{0,20}irrecevable|irrecevabilit[ée]", re.I)),
+    ("réformation", re.compile(r"r[ée]forme", re.I)),
+    ("confirmation", re.compile(r"confirme\s+le\s+jugement|confirme\s+la\s+d[ée]cision|confirme\b", re.I)),
+]
+
+
+def extract_sens(text: str) -> Optional[str]:
+    """Sens du dispositif : cassation | rejet | irrecevabilité | réformation | confirmation | None.
+    Priorité aux verbes les plus spécifiques (cassation/rejet des voies de recours)."""
+    for label, rx in _SENS:
+        if rx.search(text or ""):
+            return label
+    return None
+
+
 def matter_hits(text: str, counter) -> None:
     """Accumule les occurrences de mots-clés par domaine dans le Counter fourni."""
     for name, rx in _MATTER_RE:
@@ -195,17 +241,24 @@ def parse_chunk(text: str) -> dict:
 
 # ---------- accès données ----------
 def record_many(rows) -> int:
-    """rows: (name_key, display_name, doc_id, year, juridiction_key, side, won, matter[, amount[, firm]]).
-    Les champs 9 (montant €) et 10 (cabinet) sont optionnels → None si absents. INSERT OR IGNORE."""
-    norm = [(tuple(r) + (None, None))[:10] for r in rows]
+    """rows: (name_key, display_name, doc_id, year, juridiction_key, side, won, matter
+    [, amount[, firm[, articles[, sens]]]]). Champs 9–12 optionnels → None si absents.
+    `articles` peut être une liste (jointe par « ; ») ou une chaîne déjà jointe. INSERT OR IGNORE."""
+    def _prep(r):
+        r = (tuple(r) + (None, None, None, None))[:12]
+        arts = r[10]
+        if isinstance(arts, (list, tuple)):
+            arts = "; ".join(arts) if arts else None
+        return r[:10] + (arts, r[11])
+    norm = [_prep(r) for r in rows]
     if not norm:
         return 0
     with get_conn() as conn:
         before = conn.total_changes
         conn.executemany(
             "INSERT OR IGNORE INTO insight_appearances "
-            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)", norm)
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm, articles, sens) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", norm)
         return conn.total_changes - before
 
 
@@ -322,7 +375,7 @@ def list_lawyers(q: Optional[str], limit: int = 50, sort: str = "cases",
 def get_lawyer(key: str) -> Optional[dict]:
     with get_conn() as conn:
         rows = [dict(r) for r in conn.execute(
-            "SELECT display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm "
+            "SELECT display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm, articles, sens "
             "FROM insight_appearances WHERE name_key = ? ORDER BY year DESC, doc_id", (key,)).fetchall()]
     if not rows:
         return None
@@ -417,6 +470,20 @@ def _cocounsel(conn_key: str, limit: int = 12) -> List[dict]:
         rel = "adversaire" if r["opp"] > r["same"] else "co-conseil" if r["same"] > r["opp"] else "confrère"
         out.append({"name_key": r["name_key"], "name": r["name"], "count": r["n"], "relation": rel})
     return out
+
+
+def top_articles(limit: int = 20) -> List[dict]:
+    """Articles de loi les plus cités (nb de DÉCISIONS distinctes). Relie le corpus aux textes.
+    Les articles sont dédupliqués par décision (stockés par apparition → on regroupe par doc_id)."""
+    from collections import Counter
+    c: Counter = Counter()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT doc_id, articles FROM insight_appearances WHERE articles IS NOT NULL GROUP BY doc_id").fetchall()
+    for r in rows:
+        for a in {x.strip() for x in (r["articles"] or "").split(";") if x.strip()}:
+            c[a] += 1
+    return [{"article": a, "decisions": n} for a, n in c.most_common(max(1, min(limit, 100)))]
 
 
 # ---------- dashboard B2B : vue d'ensemble, benchmark d'avocats, export ----------

@@ -1057,6 +1057,12 @@ def insight_rgpd_requests(authorization: Optional[str] = Header(None)) -> dict:
     return {"items": insight.list_rgpd_requests()}
 
 
+@app.get("/api/insight/articles")
+def insight_articles(limit: int = 20) -> dict:
+    """Articles de loi les plus cités (nb de décisions) — relie le corpus aux textes."""
+    return {"items": insight.top_articles(limit)}
+
+
 @app.get("/api/insight/firms")
 def insight_firms(q: Optional[str] = None, limit: int = 50, sort: str = "cases") -> dict:
     """Cabinets EXPLICITEMENT nommés (« Étude X ») — couverture partielle assumée."""

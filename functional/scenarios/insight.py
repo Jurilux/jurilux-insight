@@ -103,6 +103,12 @@ CAS = [
              "GET", "/api/insight/export/lawyers.csv",
              {"anonyme": ok(lambda j: True)}),
 
+    # === /api/insight/articles (public) — textes de loi les plus cités ===
+    CasUsage("insight-articles", "Insight — articles cités (public)",
+             "GET /api/insight/articles : articles de loi les plus visés (par décision).",
+             "GET", "/api/insight/articles",
+             {"anonyme": ok(lambda j: any(a["article"] == "L.124-10" and a["decisions"] >= 1 for a in j["items"]))}),
+
     # === /api/insight/firms (public) — dimension cabinets (couverture partielle) ===
     CasUsage("insight-firms", "Insight — cabinets (public)",
              "GET /api/insight/firms : cabinets explicitement nommés (« Étude X »).",
