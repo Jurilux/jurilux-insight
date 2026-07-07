@@ -187,6 +187,38 @@ def test_analytics_amounts(temp_db):
     assert insight.get_lawyer("C C")["amount_median"] is None
 
 
+def test_firm_extraction_and_aggregation(temp_db):
+    # Association du cabinet le PLUS PROCHE de chaque avocat (jamais d'inférence).
+    p = insight.parse_chunk(
+        "Pour le demandeur, Maître Jean DUPONT, de l'Étude WEBER & ASSOCIÉS. "
+        "Pour le défendeur, Maître Anne MARTIN du cabinet SCHMIT.")
+    assert p["lawyers"][insight.name_key("Jean DUPONT")]["firm"] == "WEBER & ASSOCIÉS"
+    assert p["lawyers"][insight.name_key("Anne MARTIN")]["firm"] == "SCHMIT"
+    # Sans mention → pas de cabinet.
+    assert insight.parse_chunk("Maître Paul REUTER, avocat.")["lawyers"][insight.name_key("Paul REUTER")]["firm"] is None
+
+    insight.record_many([
+        ("A A", "Anne A", "d1", 2020, "csj", "A", 1, "Droit du travail", 10000.0, "WEBER & ASSOCIÉS"),
+        ("B B", "Bob B", "d1", 2020, "csj", "B", 0, "Droit du travail", 10000.0, "SCHMIT"),
+        ("A A", "Anne A", "d2", 2021, "csj", "A", 1, "Bail / logement", 5000.0, "WEBER & ASSOCIÉS"),
+        ("C C", "Carl C", "d3", 2021, "tal", "A", 1, "Pénal", None, "WEBER & ASSOCIÉS"),
+    ])
+    fl = insight.list_firms()
+    weber = next(f for f in fl if f["firm"] == "WEBER & ASSOCIÉS")
+    assert weber["cases"] == 3 and weber["lawyers"] == 2 and weber["win_rate"] == 1.0
+    fp = insight.get_firm("weber & associés")  # insensible à la casse
+    assert fp["firm"] == "WEBER & ASSOCIÉS" and fp["lawyers_count"] == 2 and fp["amount_median"] == 7500.0
+    assert insight.get_lawyer("A A")["firm"] == "WEBER & ASSOCIÉS"
+    assert insight.get_firm("INCONNU") is None
+
+
+def test_firm_endpoints(temp_db):
+    insight.record_many([("A A", "Anne A", "d1", 2020, "csj", "A", 1, "Pénal", None, "ARENDT")])
+    assert client.get("/api/insight/firms").status_code == 200
+    assert client.get("/api/insight/firms/ARENDT").status_code == 200
+    assert client.get("/api/insight/firms/ZZZ").status_code == 404
+
+
 def test_rgpd_request(temp_db):
     # Demande valide (opposition) -> enregistrée et listable par un admin.
     ok = client.post("/api/insight/rgpd-request",

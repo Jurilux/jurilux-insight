@@ -103,6 +103,20 @@ CAS = [
              "GET", "/api/insight/export/lawyers.csv",
              {"anonyme": ok(lambda j: True)}),
 
+    # === /api/insight/firms (public) — dimension cabinets (couverture partielle) ===
+    CasUsage("insight-firms", "Insight — cabinets (public)",
+             "GET /api/insight/firms : cabinets explicitement nommés (« Étude X »).",
+             "GET", "/api/insight/firms",
+             {"anonyme": ok(lambda j: any("WEBER" in f["firm"].upper() for f in j["items"]))}),
+    CasUsage("insight-firm-detail", "Insight — cabinets (public)",
+             "GET /api/insight/firms/{name} : fiche cabinet (avocats + agrégats).",
+             "GET", "/api/insight/firms/%C3%89TUDE%20WEBER",
+             {"anonyme": ok(lambda j: j["lawyers_count"] >= 1 and "win_rate" in j)}),
+    CasUsage("insight-firm-404", "Insight — cabinets (public)",
+             "GET /api/insight/firms/ZZZ : cabinet introuvable → 404.",
+             "GET", "/api/insight/firms/ZZZINCONNU",
+             {"anonyme": refuse(404)}),
+
     # === /api/insight/rgpd-request (public) — exercice des droits (conformité RGPD/CNPD) ===
     CasUsage("insight-rgpd-ok", "Insight — demande RGPD (public)",
              "POST /api/insight/rgpd-request : opposition d'un avocat profilé → {ok:true}.",

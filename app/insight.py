@@ -126,8 +126,49 @@ def _side_before(flat: str, pos: int, window: int = 320) -> Optional[str]:
     return "A" if la > lb else "B"
 
 
+# --- cabinets (« Étude X ») : uniquement les cabinets EXPLICITEMENT nommés (couverture partielle
+#     assumée). On n'infère jamais un cabinet ; sans mention « Étude/cabinet », l'avocat n'en a pas. ---
+# Nom de cabinet : tokens en capitale initiale, joints par « & »/« et » ; PAS de « . » (borne
+# de phrase). On coupe ensuite les mots courants capitalisés d'une phrase suivante.
+_FIRM_RE = re.compile(
+    r"(?:[ÉE]tude|cabinet)\s+(?:d['’]avocats?\s+)?"
+    r"([A-ZÉÈÀ][\wÀ-ÿ'’\-]*(?:\s+(?:&|et)\s+|\s+)[A-ZÉÈÀ][\wÀ-ÿ'’\-]*|[A-ZÉÈÀ][\wÀ-ÿ'’\-]+)")
+_FIRM_BAD = re.compile(r"\d|AVOCAT|PERSONNE|JUSTICE|SOCIET|REQU", re.IGNORECASE)
+# Mots capitalisés d'attaque de phrase à ne pas avaler dans le nom du cabinet.
+_FIRM_STOP = {"POUR", "LE", "LA", "LES", "IL", "ELLE", "ATTENDU", "VU", "SUR", "EN", "PAR",
+              "ET", "DEMEURANT", "AVOCAT", "AVOCATE", "AYANT", "REPRESENTE", "ASSISTE"}
+
+
+def _firm_clean(raw: str) -> str:
+    toks = re.sub(r"\s+", " ", raw).strip(" .,-").split(" ")
+    while len(toks) > 1 and name_key(toks[-1]) in _FIRM_STOP:
+        toks.pop()
+    return " ".join(toks)
+
+
+def _firm_near(flat: str, pos: int, window: int = 100) -> Optional[str]:
+    """Cabinet nommé le PLUS PROCHE de la mention d'un avocat (fenêtre ± window). None sinon.
+    On mesure la distance de chaque « Étude X » à la position de l'avocat et on prend la mini."""
+    start = max(0, pos - window)
+    seg = flat[start:pos + window]
+    best, best_d = None, window + 1
+    for m in _FIRM_RE.finditer(seg):
+        raw = _firm_clean(m.group(1))
+        if len(raw) < 3 or _FIRM_BAD.search(raw):
+            continue
+        d = abs((start + m.start()) - pos)
+        if d < best_d:
+            best, best_d = raw, d
+    return best
+
+
+def firm_key(name: str) -> str:
+    return name_key(name)
+
+
 def parse_chunk(text: str) -> dict:
-    """Extrait d'un fragment de décision : {lawyers: {key: {display, side}}, outcome: 'A'|'B'|None}."""
+    """Extrait d'un fragment de décision : {lawyers: {key: {display, side, firm}}, outcome: 'A'|'B'|None}.
+    `firm` = cabinet explicitement nommé à proximité (souvent None : couverture partielle assumée)."""
     flat = re.sub(r"\s+", " ", text or "")
     lawyers: dict = {}
     for m in _NAME_RE.finditer(flat):
@@ -136,11 +177,15 @@ def parse_chunk(text: str) -> dict:
             continue
         k = name_key(raw)
         side = _side_before(flat, m.start())
+        firm = _firm_near(flat, m.start())
         cur = lawyers.get(k)
         if cur is None:
-            lawyers[k] = {"display": raw, "side": side}
-        elif cur["side"] is None and side:  # complète le côté si trouvé plus loin
-            cur["side"] = side
+            lawyers[k] = {"display": raw, "side": side, "firm": firm}
+        else:
+            if cur["side"] is None and side:  # complète le côté si trouvé plus loin
+                cur["side"] = side
+            if cur.get("firm") is None and firm:
+                cur["firm"] = firm
     outcome = None
     if _DISPO_HINT.search(flat):
         a, b = bool(_OUT_A.search(flat)), bool(_OUT_B.search(flat))
@@ -150,17 +195,17 @@ def parse_chunk(text: str) -> dict:
 
 # ---------- accès données ----------
 def record_many(rows) -> int:
-    """rows: (name_key, display_name, doc_id, year, juridiction_key, side, won, matter[, amount]).
-    Le 9e champ (montant € estimé) est optionnel → None si absent. INSERT OR IGNORE."""
-    norm = [tuple(r) + (None,) if len(r) == 8 else tuple(r) for r in rows]
+    """rows: (name_key, display_name, doc_id, year, juridiction_key, side, won, matter[, amount[, firm]]).
+    Les champs 9 (montant €) et 10 (cabinet) sont optionnels → None si absents. INSERT OR IGNORE."""
+    norm = [(tuple(r) + (None, None))[:10] for r in rows]
     if not norm:
         return 0
     with get_conn() as conn:
         before = conn.total_changes
         conn.executemany(
             "INSERT OR IGNORE INTO insight_appearances "
-            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount) "
-            "VALUES (?,?,?,?,?,?,?,?,?)", norm)
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)", norm)
         return conn.total_changes - before
 
 
@@ -277,8 +322,8 @@ def list_lawyers(q: Optional[str], limit: int = 50, sort: str = "cases",
 def get_lawyer(key: str) -> Optional[dict]:
     with get_conn() as conn:
         rows = [dict(r) for r in conn.execute(
-            "SELECT display_name, doc_id, year, juridiction_key, side, won, matter, amount FROM insight_appearances "
-            "WHERE name_key = ? ORDER BY year DESC, doc_id", (key,)).fetchall()]
+            "SELECT display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm "
+            "FROM insight_appearances WHERE name_key = ? ORDER BY year DESC, doc_id", (key,)).fetchall()]
     if not rows:
         return None
     years = [r["year"] for r in rows if r["year"]]
@@ -286,6 +331,7 @@ def get_lawyer(key: str) -> Optional[dict]:
     lost = sum(1 for r in rows if r["won"] == 0)
     mts = Counter(r["matter"] for r in rows if r["matter"])
     amounts = [r["amount"] for r in rows if r["amount"] is not None]
+    firms = Counter(r["firm"] for r in rows if r["firm"])
     return {
         "name_key": key,
         "name": max((r["display_name"] for r in rows), key=len),
@@ -296,9 +342,62 @@ def get_lawyer(key: str) -> Optional[dict]:
         "as_defendeur": sum(1 for r in rows if r["side"] == "B"),
         "won": won, "lost": lost, "decided": won + lost,   # « decided » = issue estimable
         "amount_median": _median(amounts), "amount_n": len(amounts),
+        "firm": firms.most_common(1)[0][0] if firms else None,   # cabinet dominant (nommé) | None
         "matters": [{"name": k, "count": c} for k, c in mts.most_common()],
         "cocounsel": _cocounsel(conn_key=key),
         "cases": rows,
+    }
+
+
+# ---------- cabinets (dimension B2B) : uniquement les cabinets explicitement nommés ----------
+def list_firms(q: Optional[str] = None, limit: int = 50, sort: str = "cases") -> List[dict]:
+    """Cabinets nommés, avec nb d'avocats/décisions et taux de succès estimé. Tri cases|winrate."""
+    where = ["firm IS NOT NULL"]
+    args: list = []
+    if q and q.strip():
+        where.append("UPPER(firm) LIKE ?")
+        args.append("%" + q.strip().upper() + "%")
+    sql = ("SELECT firm, COUNT(*) cases, COUNT(DISTINCT name_key) lawyers, "
+           "SUM(CASE WHEN won=1 THEN 1 ELSE 0 END) won, "
+           "SUM(CASE WHEN won IN (0,1) THEN 1 ELSE 0 END) decided "
+           "FROM insight_appearances WHERE " + " AND ".join(where) + " GROUP BY firm ")
+    sql += ("HAVING decided >= 5 ORDER BY (won*1.0/decided) DESC, cases DESC "
+            if sort == "winrate" else "ORDER BY cases DESC, firm ")
+    sql += "LIMIT ?"
+    args.append(max(1, min(limit, 200)))
+    with get_conn() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [{"firm": r["firm"], "cases": r["cases"], "lawyers": r["lawyers"],
+             "won": r["won"], "decided": r["decided"], "win_rate": _taux(r["won"], r["decided"])}
+            for r in rows]
+
+
+def get_firm(name: str) -> Optional[dict]:
+    """Fiche cabinet : avocats du cabinet + agrégats (décisions, taux estimé, matières, montant)."""
+    with get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT name_key, display_name, side, won, matter, amount, firm, year "
+            "FROM insight_appearances WHERE UPPER(firm) = ?", (name.strip().upper(),)).fetchall()]
+    if not rows:
+        return None
+    won = sum(1 for r in rows if r["won"] == 1)
+    lost = sum(1 for r in rows if r["won"] == 0)
+    mts = Counter(r["matter"] for r in rows if r["matter"])
+    amounts = [r["amount"] for r in rows if r["amount"] is not None]
+    years = [r["year"] for r in rows if r["year"]]
+    lawyers: dict = {}
+    for r in rows:
+        e = lawyers.setdefault(r["name_key"], {"name_key": r["name_key"], "name": r["display_name"], "cases": 0})
+        e["cases"] += 1
+    return {
+        "firm": max((r["firm"] for r in rows), key=len),
+        "cases_count": len(rows),
+        "lawyers_count": len(lawyers),
+        "won": won, "lost": lost, "decided": won + lost, "win_rate": _taux(won, won + lost),
+        "amount_median": _median(amounts), "amount_n": len(amounts),
+        "first_year": min(years) if years else None, "last_year": max(years) if years else None,
+        "matters": [{"name": k, "count": c} for k, c in mts.most_common()],
+        "lawyers": sorted(lawyers.values(), key=lambda x: -x["cases"]),
     }
 
 

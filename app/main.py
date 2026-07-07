@@ -1057,6 +1057,20 @@ def insight_rgpd_requests(authorization: Optional[str] = Header(None)) -> dict:
     return {"items": insight.list_rgpd_requests()}
 
 
+@app.get("/api/insight/firms")
+def insight_firms(q: Optional[str] = None, limit: int = 50, sort: str = "cases") -> dict:
+    """Cabinets EXPLICITEMENT nommés (« Étude X ») — couverture partielle assumée."""
+    return {"items": insight.list_firms(q, limit, sort=sort)}
+
+
+@app.get("/api/insight/firms/{name}")
+def insight_firm(name: str) -> dict:
+    firm = insight.get_firm(name)
+    if not firm:
+        raise HTTPException(status_code=404, detail="Cabinet introuvable")
+    return firm
+
+
 @app.get("/api/insight/lawyers/{key}")
 def insight_lawyer(key: str) -> dict:
     prof = insight.get_lawyer(key)

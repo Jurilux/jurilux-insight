@@ -43,9 +43,12 @@ def run() -> dict:
             for k, v in parsed["lawyers"].items():
                 cur = e["lawyers"].get(k)
                 if cur is None:
-                    e["lawyers"][k] = {"display": v["display"], "side": v["side"]}
-                elif cur["side"] is None and v["side"]:
-                    cur["side"] = v["side"]
+                    e["lawyers"][k] = {"display": v["display"], "side": v["side"], "firm": v.get("firm")}
+                else:
+                    if cur["side"] is None and v["side"]:
+                        cur["side"] = v["side"]
+                    if cur.get("firm") is None and v.get("firm"):
+                        cur["firm"] = v["firm"]
             if parsed["outcome"] and not e["outcome"]:
                 e["outcome"] = parsed["outcome"]
             insight.matter_hits(d.get("text") or "", e["matter"])
@@ -65,15 +68,15 @@ def run() -> dict:
             won = None
             if v["side"] and e["outcome"]:
                 won = 1 if v["side"] == e["outcome"] else 0
-            rows.append((k, v["display"], doc_id, e["year"], e["jur"], v["side"], won, matter, e["amount"]))
+            rows.append((k, v["display"], doc_id, e["year"], e["jur"], v["side"], won, matter, e["amount"], v.get("firm")))
 
     # Remplacement atomique : l'ancien index disparaît puis réapparaît en une transaction.
     with db.get_conn() as conn:
         conn.execute("DELETE FROM insight_appearances")
         conn.executemany(
             "INSERT OR IGNORE INTO insight_appearances "
-            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount) "
-            "VALUES (?,?,?,?,?,?,?,?,?)", rows)
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
         inserted = conn.total_changes
     out = insight.stats()
     print(f"terminé : {total} chunks, {len(acc)} décisions → {out['lawyers']} avocats, "
