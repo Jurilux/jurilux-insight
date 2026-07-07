@@ -1326,6 +1326,19 @@ def ask_stream(req: AskRequest, request: Request,
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
+# Sert le SPA du dashboard (front) si WEB_DIR pointe vers un build : déploiement « tout-en-un »
+# sur un port unique (backend + front même origine), sans Caddy dédié. Monté APRÈS toutes les
+# routes API → /api, /health gardent la priorité ; le reste tombe sur les fichiers statiques.
+# Inactif si WEB_DIR non défini (tests, dev) → aucun impact.
+import os as _os
+
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+_WEB_DIR = _os.environ.get("WEB_DIR")
+if _WEB_DIR and _os.path.isdir(_WEB_DIR):
+    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+
+
 if __name__ == "__main__":
     import uvicorn
 
