@@ -9,6 +9,7 @@ from typing import Optional
 
 import anthropic
 
+from . import llm
 from .config import settings
 from .schemas import AskResponse, Citation, Feedback
 from .search import Hit, corpus_overview
@@ -65,7 +66,8 @@ _JSON_FORMAT = """Tu réponds EXCLUSIVEMENT avec un objet JSON valide, sans text
   "used_doc_ids": ["doc_id des extraits réellement utilisés"],
   "refused": false,
   "status": "ok" | "partial",
-  "suggested_question": "une question VOISINE, plus précise ou mieux cadrée, à laquelle tu PEUX répondre avec certitude à partir des extraits fournis ; null si aucune",
+  "suggested_question": "une question VOISINE (autre angle), plus précise ou mieux cadrée, à laquelle tu PEUX répondre avec certitude à partir des extraits fournis ; null si aucune",
+  "follow_ups": ["2 à 4 questions de suivi LOGIQUES qui, posées DANS CET ORDRE, complètent le sujet (approfondissent le même thème pas à pas) ; chacune doit être précise et trouver réponse dans le corpus ; [] si sujet clos"],
   "feedback": {
     "why": "pourquoi cette réponse / ce refus, en une phrase claire et bienveillante",
     "what_we_see": ["constats tirés des extraits"],
@@ -82,7 +84,10 @@ IMPORTANT — ne laisse JAMAIS l'utilisateur dans une impasse, que la réponse s
   large (« Quels sont mes droits ? ») échoue. Nomme un thème concret, un article, une situation.
   Ces suggestions, une fois cliquées, DOIVENT donner une vraie réponse : privilégie donc les angles
   que les extraits couvrent effectivement.
-- Fournis toujours 1 "suggested_question" (le meilleur angle) + 2 à 3 "how_to_improve" (reformulations cliquables).
+- Fournis toujours 1 "suggested_question" (autre angle) + 2 à 3 "how_to_improve" (reformulations cliquables).
+- "follow_ups" = un PARCOURS : la suite logique de questions pour aller vers une réponse COMPLÈTE
+  (ex. principe → texte applicable → délais → sanctions → jurisprudence). Ordonnées, spécifiques,
+  couvertes par le corpus. [] si la réponse épuise déjà le sujet.
 - Reste chaleureux et orienté solution : « voici ce que je peux dire », jamais un simple « non »."""
 
 SYSTEM_PROMPT = _INTRO_RULES + "\n\n" + _JSON_FORMAT
@@ -95,7 +100,8 @@ _STREAM_FORMAT = """FORMAT DE RÉPONSE (streaming) — tu réponds en DEUX temps
 2) PUIS, sur une nouvelle ligne, la balise EXACTE §§§META§§§ immédiatement suivie d'un objet JSON
    compact et valide, et RIEN après :
    {"used_doc_ids": ["doc_id réellement utilisés"], "status": "ok"|"partial", "refused": true|false,
-    "suggested_question": "question voisine précise, ou null",
+    "suggested_question": "question voisine précise (autre angle), ou null",
+    "follow_ups": ["2 à 4 questions de suivi logiques et ordonnées qui complètent le sujet ; [] si clos"],
     "how_to_improve": ["2 à 3 reformulations précises et cliquables (surtout si partial ou refus)"]}
 Rappels : suggested_question et how_to_improve SPÉCIFIQUES et ciblés (jamais larges). Pour une question
 méta sur Jurilux : réponds normalement, status="ok", used_doc_ids=[], refused=false. Ne place JAMAIS la
@@ -247,23 +253,137 @@ def _build_messages(history, user_content: str) -> list:
     return clean
 
 
+_SYS_RESUME = """Tu es un assistant juridique luxembourgeois. Résume le document fourni de
+façon FIDÈLE, neutre et structurée : nature du document, parties, faits saillants,
+prétentions, fondements juridiques invoqués, et issue/dispositif s'il y figure. Ne rien
+inventer ni extrapoler : t'en tenir strictement au document. Réponds en français, en
+markdown concis (titres courts, puces)."""
+
+_SYS_CONTRE = """Tu es un avocat luxembourgeois. À partir d'un DOCUMENT ADVERSE et d'EXTRAITS
+du corpus juridique officiel (jurisprudence luxembourgeoise + Legilux), rédige un
+CONTRE-ARGUMENTAIRE structuré qui réfute, point par point, les prétentions adverses — EN
+T'APPUYANT UNIQUEMENT sur les extraits fournis. Chaque argument doit citer sa source par son
+doc_id. N'invente AUCUNE règle ni décision ; si les extraits ne permettent pas de réfuter un
+point, dis-le honnêtement. Réponds STRICTEMENT en JSON :
+{"answer": "<contre-argumentaire en markdown>", "used_doc_ids": ["doc_id réellement cités"]}"""
+
+_LIMITE_DOC = 12000  # bornage du texte injecté (garde-fou coût/latence)
+
+
+def _generer_json(system: str, contenu: str, temperature: float, sensibilite: str) -> tuple:
+    """Appelle le routeur LLM avec un seul tour utilisateur et parse le JSON de sortie."""
+    raw = llm.generer(system, [{"role": "user", "content": contenu}], temperature, sensibilite)
+    return raw, (_extract_json(raw) or {})
+
+
+def _cites_depuis_used(hits: list[Hit], data: dict) -> list[Citation]:
+    """Citations = documents que le modèle a réellement cités (`used_doc_ids`) ; à défaut,
+    les pistes les plus proches."""
+    used = {str(d) for d in data.get("used_doc_ids") or []}
+    return _citations_used(hits, used) if used else _pistes(hits)
+
+
+_MAX_FOLLOW_UPS = 4
+
+
+def _follow_ups(data: dict) -> Optional[list]:
+    """Parcours guidé : questions de suivi ordonnées, nettoyées, dédupliquées et bornées."""
+    brut = data.get("follow_ups")
+    if not isinstance(brut, list):
+        return None
+    out, vus = [], set()
+    for q in brut:
+        s = q.strip() if isinstance(q, str) else ""
+        if s and s.lower() not in vus:
+            vus.add(s.lower())
+            out.append(s)
+        if len(out) >= _MAX_FOLLOW_UPS:
+            break
+    return out or None
+
+
+def _reponse_sourcee(system: str, contenu: str, hits: list[Hit], temperature: float,
+                     sensibilite: str) -> dict:
+    """Réponse LLM ANCRÉE aux extraits fournis (contre-argumentaire, rédaction). Sans extrait
+    → refus gracieux (jamais d'invention). Renvoie {answer, citations, refused}."""
+    if not hits:
+        return {"answer": None, "citations": [], "refused": True}
+    raw, data = _generer_json(system, contenu, temperature, sensibilite)
+    return {"answer": data.get("answer") or raw or None,
+            "citations": _cites_depuis_used(hits, data), "refused": False}
+
+
+def resume(texte: str, sensibilite: str = "confidentiel") -> str:
+    """Résumé fidèle d'un document (LLM routé par sensibilité). Lève en cas de panne LLM."""
+    contenu = "DOCUMENT À RÉSUMER :\n\n" + (texte or "")[:_LIMITE_DOC]
+    return llm.generer(_SYS_RESUME, [{"role": "user", "content": contenu}], 0.0, sensibilite).strip()
+
+
+def contre_argumentaire(texte: str, hits: list[Hit], sensibilite: str = "confidentiel") -> dict:
+    """Contre-argumentaire ancré au corpus officiel : réfute un document adverse en s'appuyant
+    sur la jurisprudence LU réelle, avec citations vérifiables. Sans extrait → refus gracieux."""
+    contenu = ("DOCUMENT ADVERSE :\n\n" + (texte or "")[:_LIMITE_DOC]
+               + "\n\n=== Extraits du corpus (fondent la réfutation) ===\n\n" + _context_block(hits))
+    return _reponse_sourcee(_SYS_CONTRE, contenu, hits, 0.0, sensibilite)
+
+
+_SYS_REDACTION = """Tu es un juriste-rédacteur luxembourgeois. Rédige le document demandé
+(courrier, conclusions, note, clause…) en t'appuyant sur les EXTRAITS du corpus officiel
+fournis pour tout fondement juridique. Style clair et professionnel, en français. Cite tes
+fondements par leur doc_id. N'invente AUCUNE règle ni décision : si un point n'est pas
+étayé par les extraits, reste général ou signale-le. Réponds STRICTEMENT en JSON :
+{"answer": "<document en markdown>", "used_doc_ids": ["doc_id des fondements cités"]}"""
+
+
+_SYS_CONTRAT = """Tu es un juriste-relecteur de contrats luxembourgeois. On te fournit le
+TEXTE d'un contrat et un PLAYBOOK (liste numérotée de règles à vérifier). Pour CHAQUE règle,
+évalue le contrat et rends un verdict :
+- "ok"      : le contrat respecte la règle ;
+- "issue"   : le contrat traite le point mais de façon problématique/insuffisante ;
+- "missing" : le point n'est pas traité dans le contrat.
+Justifie brièvement (note factuelle, cite le passage si pertinent). Ne rien inventer :
+t'appuyer uniquement sur le texte fourni. Réponds STRICTEMENT en JSON :
+{"findings": [{"label": "<intitulé de la règle>", "status": "ok|issue|missing", "note": "<justification>"}]}"""
+
+
+def revue_contrat(texte: str, rules: list, sensibilite: str = "confidentiel") -> dict:
+    """Revue d'un contrat contre un playbook (règles maison). Renvoie {findings:[...]}.
+    Chaque finding = {label, status ok|issue|missing, note}. Panne LLM → lève."""
+    if not rules:
+        return {"findings": []}
+    regles = "\n".join(f"{i+1}. [{r.get('label')}] {r.get('instruction')}"
+                       for i, r in enumerate(rules))
+    contenu = ("CONTRAT :\n\n" + (texte or "")[:_LIMITE_DOC]
+               + "\n\n=== PLAYBOOK (règles à vérifier) ===\n" + regles)
+    _, data = _generer_json(_SYS_CONTRAT, contenu, 0.0, sensibilite)
+    findings = data.get("findings") if isinstance(data.get("findings"), list) else []
+    valides = {"ok", "issue", "missing"}
+    out = [{"label": str(f.get("label", "")), "note": str(f.get("note", "")),
+            "status": f.get("status") if f.get("status") in valides else "issue"}
+           for f in findings if isinstance(f, dict)]
+    return {"findings": out}
+
+
+def rediger(instruction: str, hits: list[Hit], sensibilite: str = "public") -> dict:
+    """Rédaction assistée sourcée : produit un document à partir d'une instruction et des
+    extraits du corpus. Renvoie {answer, citations}. Refuse gracieusement sans extrait."""
+    contenu = ("INSTRUCTION DE RÉDACTION :\n" + (instruction or "")[:2000]
+               + "\n\n=== Extraits du corpus (fondements) ===\n\n" + _context_block(hits))
+    return _reponse_sourcee(_SYS_REDACTION, contenu, hits, 0.2, sensibilite)
+
+
 def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = False,
-           history=None) -> AskResponse:
+           history=None, sensibilite: str = "public") -> AskResponse:
     if not hits:
         return refusal(
             "Aucun document pertinent trouvé dans le corpus pour cette question "
             "(avec les filtres appliqués, le cas échéant)."
         )
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    msg = client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=settings.anthropic_max_tokens,
-        temperature=temperature,
-        system=_system_blocks(SYSTEM_PROMPT, pedagogical),
-        messages=_build_messages(history, _user_content(q, hits)),
-    )
-    raw = "".join(b.text for b in msg.content if b.type == "text")
+    # Génération via le routeur de modèle (Claude / Mistral UE / local selon la sensibilité).
+    system_text = SYSTEM_PROMPT + (PEDAGOGICAL_SUFFIX if pedagogical else "")
+    raw = llm.generer(system_text, _build_messages(history, _user_content(q, hits)),
+                      temperature, sensibilite)
     data = _extract_json(raw)
 
     if data is None:
@@ -300,7 +420,7 @@ def answer(q: str, hits: list[Hit], temperature: float, pedagogical: bool = Fals
     return AskResponse(
         answer=data.get("answer"), citations=_citations_used(hits, used), refused=False,
         status=status, feedback=feedback, suggested_question=suggested,
-        prompt_version=settings.prompt_version,
+        follow_ups=_follow_ups(data), prompt_version=settings.prompt_version,
     )
 
 
@@ -315,6 +435,23 @@ def answer_stream(q: str, hits: list[Hit], temperature: float, pedagogical: bool
         yield {"type": "delta", "text": why}
         yield {"type": "meta", "answer": None, "citations": [], "refused": True, "status": "ok",
                "suggested_question": None, "feedback": {"why": why},
+               "prompt_version": settings.prompt_version}
+        return
+
+    # Fournisseurs sans streaming natif (Mistral/local) : on génère en une passe et on émet
+    # le texte en un bloc, en conservant le même contrat d'événements (delta puis meta).
+    if llm.fournisseur("public") != "anthropic":
+        try:
+            resp = answer(q, hits, temperature, pedagogical=pedagogical, history=history)
+        except Exception:
+            resp = refusal("La génération de réponse a échoué. Réessayez dans un instant.")
+        if resp.answer:
+            yield {"type": "delta", "text": resp.answer}
+        yield {"type": "meta", "answer": resp.answer,
+               "citations": [c.model_dump() for c in resp.citations],
+               "refused": resp.refused, "status": resp.status,
+               "suggested_question": resp.suggested_question, "follow_ups": resp.follow_ups,
+               "feedback": resp.feedback.model_dump() if resp.feedback else None,
                "prompt_version": settings.prompt_version}
         return
 
@@ -383,4 +520,5 @@ def answer_stream(q: str, hits: list[Hit], temperature: float, pedagogical: bool
     yield {"type": "meta", "answer": final_answer,
            "citations": [c.model_dump() for c in cites],
            "refused": refused, "status": status, "suggested_question": suggested,
+           "follow_ups": _follow_ups(data) if not refused else None,
            "feedback": feedback, "prompt_version": settings.prompt_version}

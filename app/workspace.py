@@ -6,18 +6,13 @@ SQLite, stdlib. Cloisonnement : chaque endpoint vérifie l'appartenance avant to
 """
 from __future__ import annotations
 
-import datetime
 import json
 import sqlite3
 from typing import List, Optional
 
-from .db import get_conn
+from .db import get_conn, loads_list, now_iso as _now
 
 ROLES = ("owner", "admin", "member")
-
-
-def _now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 # ---------- espaces de travail ----------
@@ -119,10 +114,10 @@ def delete_dossier(dossier_id: int) -> bool:
 def list_dossiers(workspace_id: int) -> List[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT d.id, d.name, d.created_at, "
+            "SELECT d.id, d.name, d.created_at, d.restricted, "
             "  (SELECT COUNT(*) FROM dossier_items i WHERE i.dossier_id = d.id) AS items "
             "FROM dossiers d WHERE d.workspace_id = ? ORDER BY d.id DESC", (workspace_id,)).fetchall()
-    return [dict(r) for r in rows]
+    return [{**dict(r), "restricted": bool(r["restricted"])} for r in rows]
 
 
 def dossier_workspace(dossier_id: int) -> Optional[int]:
@@ -142,19 +137,59 @@ def add_item(dossier_id: int, question: str, answer: Optional[str],
     return {"id": cur.lastrowid}
 
 
+# ---------- cloisons déontologiques (ethical walls) ----------
+def set_restricted(dossier_id: int, restricted: bool) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE dossiers SET restricted = ? WHERE id = ?",
+                     (1 if restricted else 0, dossier_id))
+
+
+def grant_access(dossier_id: int, user_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("INSERT OR IGNORE INTO dossier_access(dossier_id, user_id) VALUES (?,?)",
+                     (dossier_id, user_id))
+
+
+def revoke_access(dossier_id: int, user_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM dossier_access WHERE dossier_id = ? AND user_id = ?",
+                           (dossier_id, user_id))
+        return cur.rowcount > 0
+
+
+def membership_by_email(workspace_id: int, email: str) -> Optional[int]:
+    """user_id d'un membre de l'espace identifié par e-mail, ou None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT m.user_id FROM workspace_members m JOIN users u ON u.id = m.user_id "
+            "WHERE m.workspace_id = ? AND u.email = ?",
+            (workspace_id, email.strip().lower())).fetchone()
+    return row["user_id"] if row else None
+
+
+def can_access_dossier(dossier_id: int, user_id: int, role: str) -> bool:
+    """Dossier NON restreint = visible par tout membre. Restreint = owner/admin de l'espace
+    + utilisateurs explicitement autorisés (cloison déontologique / conflits d'intérêts)."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT restricted FROM dossiers WHERE id = ?", (dossier_id,)).fetchone()
+        if row is None:
+            return False
+        if not row["restricted"] or role in ("owner", "admin"):
+            return True
+        acc = conn.execute("SELECT 1 FROM dossier_access WHERE dossier_id = ? AND user_id = ?",
+                           (dossier_id, user_id)).fetchone()
+        return acc is not None
+
+
+_MAX_ITEMS = 500  # borne défensive (un dossier partagé peut grossir sans limite)
+
+
 def list_items(dossier_id: int) -> List[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT i.id, i.question, i.answer, i.citations, i.status, i.created_at, u.email AS added_by "
             "FROM dossier_items i LEFT JOIN users u ON u.id = i.added_by "
-            "WHERE i.dossier_id = ? ORDER BY i.id DESC", (dossier_id,)).fetchall()
-    out = []
-    for r in rows:
-        try:
-            cites = json.loads(r["citations"] or "[]")
-        except Exception:
-            cites = []
-        out.append({"id": r["id"], "question": r["question"], "answer": r["answer"],
-                    "citations": cites, "status": r["status"], "created_at": r["created_at"],
-                    "added_by": r["added_by"]})
-    return out
+            "WHERE i.dossier_id = ? ORDER BY i.id DESC LIMIT ?", (dossier_id, _MAX_ITEMS)).fetchall()
+    return [{"id": r["id"], "question": r["question"], "answer": r["answer"],
+             "citations": loads_list(r["citations"]), "status": r["status"],
+             "created_at": r["created_at"], "added_by": r["added_by"]} for r in rows]

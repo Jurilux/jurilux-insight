@@ -76,7 +76,7 @@ def test_ask_full_contract(monkeypatch):
         "feedback": {"why": "Sources concordantes", "what_we_see": ["arrêt CSJ 2019"],
                      "limits": "Corpus partiel", "how_to_improve": ["préciser l'année"]},
     })
-    with patch.object(rag.anthropic, "Anthropic") as A:
+    with patch("app.llm.anthropic.Anthropic") as A:
         A.return_value.messages.create.return_value = llm
         r = client.post("/api/ask", json={
             "q": "licenciement faute grave", "topK": 5, "temperature": 0,
@@ -94,6 +94,24 @@ def test_ask_full_contract(monkeypatch):
     assert body["citations"][1]["pdf_url"].startswith("https://legilux")
 
 
+def test_ask_follow_ups_parcours(monkeypatch):
+    monkeypatch.setattr(search, "search", lambda q, k, f: HITS)
+    llm = _llm_response({
+        "answer": "Le préavis dépend de l'ancienneté. [csj_ch08_2019_demo1]",
+        "used_doc_ids": ["csj_ch08_2019_demo1"], "refused": False, "status": "ok",
+        "suggested_question": "Quel préavis pour un CDD ?",
+        "follow_ups": ["Quel est le préavis selon l'ancienneté ?",
+                       "Quelles indemnités en cas de non-respect du préavis ?",
+                       "Quel est le préavis selon l'ancienneté ?"],  # doublon → dédupliqué
+    })
+    with patch("app.llm.anthropic.Anthropic") as A:
+        A.return_value.messages.create.return_value = llm
+        body = client.post("/api/ask", json={"q": "préavis licenciement"}).json()
+    assert body["follow_ups"] == ["Quel est le préavis selon l'ancienneté ?",
+                                   "Quelles indemnités en cas de non-respect du préavis ?"]
+    assert body["suggested_question"] == "Quel préavis pour un CDD ?"  # autre angle, distinct
+
+
 def test_ask_llm_refusal_keeps_pistes_and_pivot(monkeypatch):
     monkeypatch.setattr(search, "search", lambda q, k, f: HITS)
     llm = _llm_response({"answer": None, "used_doc_ids": [], "refused": True,
@@ -101,7 +119,7 @@ def test_ask_llm_refusal_keeps_pistes_and_pivot(monkeypatch):
                          "suggested_question": "Quel préavis pour un CDD ?",
                          "feedback": {"why": "Hors du champ du corpus.",
                                       "how_to_improve": ["Préciser le type de contrat"]}})
-    with patch.object(rag.anthropic, "Anthropic") as A:
+    with patch("app.llm.anthropic.Anthropic") as A:
         A.return_value.messages.create.return_value = llm
         r = client.post("/api/ask", json={"q": "recette de kachkéis"})
     body = r.json()
@@ -117,7 +135,7 @@ def test_ask_invalid_llm_json_degrades_to_partial(monkeypatch):
     monkeypatch.setattr(search, "search", lambda q, k, f: HITS)
     block = MagicMock(); block.type = "text"; block.text = "réponse libre sans JSON"
     msg = MagicMock(); msg.content = [block]
-    with patch.object(rag.anthropic, "Anthropic") as A:
+    with patch("app.llm.anthropic.Anthropic") as A:
         A.return_value.messages.create.return_value = msg
         r = client.post("/api/ask", json={"q": "test"})
     body = r.json()

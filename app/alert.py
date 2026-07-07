@@ -6,15 +6,10 @@ comme « hits » non lus. SQLite ; la recherche n'est pas importée ici (sépara
 """
 from __future__ import annotations
 
-import datetime
 import sqlite3
 from typing import List, Optional
 
-from .db import get_conn
-
-
-def _now() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+from .db import get_conn, now_iso as _now
 
 
 def create_alert(user_id: int, query: str, source_type: Optional[str]) -> dict:

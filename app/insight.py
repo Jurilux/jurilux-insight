@@ -142,6 +142,52 @@ def matters() -> List[dict]:
     return [{"name": r["matter"], "count": r["n"]} for r in rows]
 
 
+def _taux(won: int, decided: int) -> Optional[float]:
+    return round(won / decided, 3) if decided else None
+
+
+def analytics(matter: Optional[str] = None, juridiction: Optional[str] = None) -> dict:
+    """Analytics contentieux (données PUBLIQUES de jurisprudence, avocats/parties uniquement —
+    jamais de magistrats). Volumes et taux de succès ESTIMÉ (indicatif) par matière, par
+    juridiction et par année. `decided` = apparitions dont l'issue est estimable.
+
+    NB : pas de montants ici — l'index insight ne les extrait pas encore (extension future de
+    `insight_build.py`). Filtres optionnels : `matter`, `juridiction`."""
+    where, args = [], []
+    if matter:
+        where.append("matter = ?"); args.append(matter)
+    if juridiction:
+        where.append("juridiction_key = ?"); args.append(juridiction)
+    clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
+
+    # Les 4 agrégations sont indépendantes → une seule connexion partagée (au lieu de 4).
+    def _agg(conn, dim: str) -> list:
+        rows = conn.execute(
+            f"SELECT {dim} AS cle, COUNT(*) cases, "
+            "SUM(CASE WHEN won IN (0,1) THEN 1 ELSE 0 END) decided, "
+            "SUM(CASE WHEN won = 1 THEN 1 ELSE 0 END) won "
+            f"FROM insight_appearances {clause}"
+            f"GROUP BY {dim} HAVING cle IS NOT NULL ORDER BY cases DESC", args).fetchall()
+        return [{"cle": r["cle"], "cases": r["cases"], "decided": r["decided"],
+                 "won": r["won"], "win_rate": _taux(r["won"], r["decided"])} for r in rows]
+
+    with get_conn() as conn:
+        g = conn.execute(
+            "SELECT COUNT(*) cases, "
+            "SUM(CASE WHEN won IN (0,1) THEN 1 ELSE 0 END) decided, "
+            "SUM(CASE WHEN won = 1 THEN 1 ELSE 0 END) won, "
+            "COUNT(DISTINCT name_key) lawyers "
+            f"FROM insight_appearances {clause}", args).fetchone()
+        return {
+            "overall": {"cases": g["cases"] or 0, "decided": g["decided"] or 0,
+                        "won": g["won"] or 0, "win_rate": _taux(g["won"] or 0, g["decided"] or 0),
+                        "lawyers": g["lawyers"] or 0},
+            "by_matter": _agg(conn, "matter"),
+            "by_juridiction": _agg(conn, "juridiction_key"),
+            "by_year": _agg(conn, "year"),
+        }
+
+
 def list_lawyers(q: Optional[str], limit: int = 50, sort: str = "cases",
                  matter: Optional[str] = None) -> List[dict]:
     """Avocats filtrés (recherche, matière) et triés (cases | recent | winrate)."""

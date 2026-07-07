@@ -7,6 +7,7 @@ Filterable : year, juridiction_key, source_type. Searchable : text, title.
 """
 import datetime
 import json
+import time
 import urllib.request
 from dataclasses import dataclass
 from typing import Optional
@@ -90,10 +91,27 @@ def _filter_expr(f: SearchFilters) -> Optional[str]:
 
 CORPUS_META_INDEX = "corpus_meta"  # 1 doc (id=1) : compteurs au niveau document + fraîcheur
 
+# Cache TTL : corpus_overview() fait 2 recherches Meili et est appelé à CHAQUE /api/ask
+# (via rag._about_block, injecté dans le prompt système). Le corpus ne bouge qu'à
+# l'ingestion (cron mensuel) → un cache de quelques minutes évite ces 2 appels par question
+# sans risque de fraîcheur perceptible.
+_OVERVIEW_TTL = 300.0  # secondes
+_overview_cache: dict = {"at": None, "data": None}
+
 
 def corpus_overview() -> dict:
     """Périmètre du corpus : nb de décisions/textes (index corpus_meta, maj à
-    l'ingestion) + total de chunks et année la plus récente (facettes Meili)."""
+    l'ingestion) + total de chunks et année la plus récente (facettes Meili).
+    Résultat mis en cache `_OVERVIEW_TTL` s (le corpus ne change qu'à l'ingestion)."""
+    now = time.monotonic()
+    if _overview_cache["at"] is not None and now - _overview_cache["at"] < _OVERVIEW_TTL:
+        return _overview_cache["data"]
+    data = _compute_overview()
+    _overview_cache["at"], _overview_cache["data"] = now, data
+    return data
+
+
+def _compute_overview() -> dict:
     client = _client()
     data: dict = {"decisions": None, "texts": None, "projets": None, "updated": None,
                   "chunks": None, "latest_year": None, "by_source": None}

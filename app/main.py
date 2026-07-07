@@ -13,11 +13,13 @@ from collections import defaultdict, deque
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import (admin, alert as alert_store, alert_runner, auth, db, feedback as fb_store,
-               insight, metrics, rag, search, share as share_store, workspace as ws)
+from . import (admin, alert as alert_store, alert_runner, apikeys, audit, auth, config_store,
+               db, feedback as fb_store, insight, llm, metrics, oidc, playbooks as pb_store,
+               prompts as prompts_store, rag, rgpd, search, share as share_store, vault,
+               workspace as ws)
 from .config import settings
 from .schemas import (AskRequest, AskResponse, DossierCreate, DossierItemAdd, FeedbackIn,
                       MemberAdd, SearchFilters, ShareIn, WorkspaceCreate)
@@ -95,8 +97,9 @@ class Credentials(BaseModel):
     password: str
 
 
-def _current_user(authorization: Optional[str]) -> Optional[dict]:
-    return auth.user_for_token(auth.token_from_header(authorization))
+def _current_user(authorization: Optional[str], x_api_key: Optional[str] = None) -> Optional[dict]:
+    u = auth.user_for_token(auth.token_from_header(authorization))
+    return u or apikeys.user_for_key(x_api_key)
 
 
 def _require_user(authorization: Optional[str]) -> dict:
@@ -133,6 +136,7 @@ def login(creds: Credentials) -> dict:
     user = auth.authenticate(creds.email, creds.password)
     if not user:
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+    audit.log("auth.login", user)
     return {"token": auth.create_session(user["id"]), "user": {"email": user["email"]}}
 
 
@@ -140,6 +144,45 @@ def login(creds: Credentials) -> dict:
 def logout(authorization: Optional[str] = Header(None)) -> dict:
     auth.delete_session(auth.token_from_header(authorization))
     return {"ok": True}
+
+
+# ---------- SSO entreprise (OIDC) — optionnel, actif si configuré ----------
+@app.get("/api/auth/oidc/enabled")
+def oidc_enabled() -> dict:
+    """Le front n'affiche le bouton « SSO » que si l'IdP du cabinet est configuré."""
+    return {"enabled": oidc.enabled()}
+
+
+@app.get("/api/auth/oidc/login")
+def oidc_login() -> Response:
+    if not oidc.enabled():
+        raise HTTPException(status_code=404, detail="SSO non configuré")
+    url = oidc.login_url(oidc.new_state())
+    return Response(status_code=307, headers={"Location": url})
+
+
+@app.get("/api/auth/oidc/callback")
+def oidc_callback(code: Optional[str] = None, state: Optional[str] = None) -> Response:
+    if not oidc.enabled():
+        raise HTTPException(status_code=404, detail="SSO non configuré")
+    if not code or not oidc.check_state(state):
+        raise HTTPException(status_code=400, detail="Requête OIDC invalide (code/state)")
+    try:
+        email = oidc.email_from_callback(code)
+    except Exception:
+        log.exception("échange OIDC")
+        raise HTTPException(status_code=502, detail="L'IdP n'a pas répondu")
+    if not email:
+        raise HTTPException(status_code=400, detail="Aucun e-mail fourni par l'IdP")
+    user = auth.ensure_user(email)
+    token = auth.create_session(user["id"])
+    audit.log("auth.sso", user)
+    # Retour vers le front avec le jeton en fragment (jamais loggé), sinon JSON.
+    if settings.frontend_base_url:
+        sep = "#" if "#" not in settings.frontend_base_url else "&"
+        return Response(status_code=307,
+                        headers={"Location": f"{settings.frontend_base_url}{sep}token={token}"})
+    return JSONResponse({"token": token, "user": {"email": user["email"]}})
 
 
 class PasswordChange(BaseModel):
@@ -253,11 +296,15 @@ def create_dossier(wid: int, body: DossierCreate, authorization: Optional[str] =
     return ws.create_dossier(wid, body.name, user["id"])
 
 
-def _dossier_member(did: int, user: dict) -> None:
+def _dossier_member(did: int, user: dict) -> str:
     wid = ws.dossier_workspace(did)
     if wid is None:
         raise HTTPException(status_code=404, detail="Dossier introuvable")
-    _require_ws_role(wid, user, ws.ROLES)
+    role = _require_ws_role(wid, user, ws.ROLES)
+    # Cloison déontologique : un dossier restreint reste invisible aux non-autorisés (404).
+    if not ws.can_access_dossier(did, user["id"], role):
+        raise HTTPException(status_code=404, detail="Dossier introuvable")
+    return role
 
 
 @app.get("/api/dossiers/{did}/items")
@@ -274,6 +321,55 @@ def add_dossier_item(did: int, body: DossierItemAdd,
     _dossier_member(did, user)
     cites = [c for c in body.citations if isinstance(c, dict)]
     return ws.add_item(did, body.question, body.answer, cites, body.status, user["id"])
+
+
+def _dossier_gestion(did: int, user: dict) -> int:
+    """Vérifie que l'utilisateur est owner/admin de l'espace du dossier ; renvoie wid."""
+    wid = ws.dossier_workspace(did)
+    if wid is None:
+        raise HTTPException(status_code=404, detail="Dossier introuvable")
+    _require_ws_role(wid, user, ("owner", "admin"))
+    return wid
+
+
+class RestrictIn(BaseModel):
+    restricted: bool
+
+
+@app.post("/api/dossiers/{did}/restrict")
+def restrict_dossier(did: int, body: RestrictIn, authorization: Optional[str] = Header(None)) -> dict:
+    """Cloison déontologique : rend un dossier restreint (visible seulement des autorisés)."""
+    user = _require_user(authorization)
+    _dossier_gestion(did, user)
+    ws.set_restricted(did, body.restricted)
+    audit.log("dossier.restrict", user, f"dossier={did} restricted={body.restricted}")
+    return {"ok": True, "restricted": body.restricted}
+
+
+class AccessIn(BaseModel):
+    email: str = Field(min_length=3)
+
+
+@app.post("/api/dossiers/{did}/access")
+def grant_dossier_access(did: int, body: AccessIn, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    wid = _dossier_gestion(did, user)
+    cible = ws.membership_by_email(wid, body.email)
+    if not cible:
+        raise HTTPException(status_code=400, detail="Cet utilisateur n'est pas membre de l'espace")
+    ws.grant_access(did, cible)
+    audit.log("dossier.grant", user, f"dossier={did} user={cible}")
+    return {"ok": True, "user_id": cible}
+
+
+@app.delete("/api/dossiers/{did}/access/{uid}")
+def revoke_dossier_access(did: int, uid: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    _dossier_gestion(did, user)
+    if not ws.revoke_access(did, uid):
+        raise HTTPException(status_code=404, detail="Accès introuvable")
+    audit.log("dossier.revoke", user, f"dossier={did} user={uid}")
+    return {"ok": True}
 
 
 class RoleUpdate(BaseModel):
@@ -505,11 +601,12 @@ def admin_list_users(authorization: Optional[str] = Header(None)) -> dict:
 @app.post("/api/admin/users/{user_id}/plan")
 def admin_set_plan(user_id: int, body: PlanUpdate,
                    authorization: Optional[str] = Header(None)) -> dict:
-    _require_admin(authorization)
+    me = _require_admin(authorization)
     if body.plan not in ("student", "pro"):
         raise HTTPException(status_code=400, detail="plan invalide (student|pro)")
     if not admin.set_user_plan(user_id, body.plan):
         raise HTTPException(status_code=404, detail="utilisateur introuvable")
+    audit.log("admin.set_plan", me, f"user={user_id} plan={body.plan}")
     return {"ok": True}
 
 
@@ -522,6 +619,7 @@ def admin_set_admin(user_id: int, body: AdminUpdate,
                             detail="Vous ne pouvez pas retirer vos propres droits admin")
     if not admin.set_user_admin(user_id, body.is_admin):
         raise HTTPException(status_code=404, detail="utilisateur introuvable")
+    audit.log("admin.set_admin", me_admin, f"user={user_id} is_admin={body.is_admin}")
     return {"ok": True}
 
 
@@ -534,6 +632,7 @@ def admin_delete_user(user_id: int,
                             detail="Vous ne pouvez pas supprimer votre propre compte")
     if not admin.delete_user(user_id):
         raise HTTPException(status_code=404, detail="utilisateur introuvable")
+    audit.log("admin.delete_user", me_admin, f"user={user_id}")
     return {"ok": True}
 
 
@@ -542,6 +641,262 @@ def admin_questions(limit: int = 100,
                     authorization: Optional[str] = Header(None)) -> dict:
     _require_admin(authorization)
     return {"items": admin.recent_questions(min(max(limit, 1), 500))}
+
+
+@app.get("/api/admin/llm")
+def admin_llm(authorization: Optional[str] = Header(None)) -> dict:
+    """Routage du modèle par sensibilité (public vs confidentiel) — visibilité souveraineté :
+    quel fournisseur (Claude / Mistral UE / local) répond à quel type de question."""
+    _require_admin(authorization)
+    return llm.info()
+
+
+@app.get("/api/admin/health")
+def admin_health(authorization: Optional[str] = Header(None)) -> dict:
+    """Observabilité détaillée (IT du cabinet) : dépendances + volumétrie + routage LLM."""
+    _require_admin(authorization)
+    counts = {}
+    try:
+        with db.get_conn() as conn:
+            for t in ("users", "vault_documents", "audit_log", "api_keys"):
+                counts[t] = conn.execute(f"SELECT COUNT(*) n FROM {t}").fetchone()["n"]
+    except Exception:
+        log.exception("comptage santé")
+    return {
+        "meilisearch": search.meili_healthy(),
+        "llm_configured": bool(settings.anthropic_api_key),
+        "llm_routing": llm.info(),
+        "index": search.index_stats(),
+        "counts": counts,
+        "metrics": metrics.snapshot(),
+    }
+
+
+class ConfigPatch(BaseModel):
+    values: dict
+
+
+@app.get("/api/admin/config")
+def admin_get_config(authorization: Optional[str] = Header(None)) -> dict:
+    """Réglages runtime non-secrets (modifiables sans redéploiement)."""
+    _require_admin(authorization)
+    return {"config": config_store.get_all(), "modifiables": list(config_store.CLES_AUTORISEES)}
+
+
+@app.patch("/api/admin/config")
+def admin_patch_config(body: ConfigPatch, authorization: Optional[str] = Header(None)) -> dict:
+    """Applique et persiste des réglages runtime (clés hors liste blanche ignorées)."""
+    me = _require_admin(authorization)
+    appliques = config_store.set_many(body.values)
+    audit.log("admin.config", me, ", ".join(appliques))
+    return {"applied": appliques}
+
+
+# ---------- Socle entreprise : audit, rétention/purge, export RGPD, clés d'API, prompts ----------
+@app.get("/api/admin/audit")
+def admin_audit(limit: int = 200, action: Optional[str] = None,
+                authorization: Optional[str] = Header(None)) -> dict:
+    """Journal d'audit (souverain, local) : qui/quoi/quand. Réservé aux admins."""
+    _require_admin(authorization)
+    return {"items": audit.recent(limit, action)}
+
+
+class PurgeRequest(BaseModel):
+    days: int = Field(ge=1, le=3650)
+
+
+@app.post("/api/admin/purge")
+def admin_purge(body: PurgeRequest, authorization: Optional[str] = Header(None)) -> dict:
+    """Rétention : purge des données (historique/feedback/partages/audit) au-delà de N jours."""
+    me = _require_admin(authorization)
+    res = rgpd.purge(body.days)
+    audit.log("admin.purge", me, f"days={body.days}")
+    return res
+
+
+@app.get("/api/me/export")
+def me_export(authorization: Optional[str] = Header(None)) -> dict:
+    """Portabilité RGPD : toutes les données de l'utilisateur, en clair."""
+    user = _require_user(authorization)
+    audit.log("rgpd.export", user)
+    return rgpd.export_user(user["id"])
+
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(default="clé", max_length=80)
+
+
+@app.post("/api/keys")
+def create_key(body: ApiKeyCreate, authorization: Optional[str] = Header(None)) -> dict:
+    """Crée une clé d'API de service (valeur montrée UNE seule fois)."""
+    user = _require_user(authorization)
+    k = apikeys.create(user["id"], body.name)
+    audit.log("apikey.create", user, k["prefix"])
+    return k
+
+
+@app.get("/api/keys")
+def list_keys(authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    return {"items": apikeys.list_keys(user["id"])}
+
+
+@app.delete("/api/keys/{key_id}")
+def revoke_key(key_id: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    ok = apikeys.revoke(key_id, user["id"])
+    if ok:
+        audit.log("apikey.revoke", user, str(key_id))
+    return _ok_ou_404(ok, "Clé introuvable")
+
+
+class PromptIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1)
+    workspace_id: Optional[int] = None
+
+
+@app.post("/api/prompts")
+def create_prompt(body: PromptIn, authorization: Optional[str] = Header(None)) -> dict:
+    """Bibliothèque de prompts : perso (workspace_id absent) ou partagé au cabinet."""
+    user = _require_user(authorization)
+    if body.workspace_id is not None:
+        _require_ws_role(body.workspace_id, user, ws.ROLES)  # doit être membre de l'espace
+    return prompts_store.create(user["id"], body.title, body.body, body.workspace_id)
+
+
+@app.get("/api/prompts")
+def list_prompts(authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    return {"items": prompts_store.visibles(user["id"], _mes_espaces(user))}
+
+
+@app.delete("/api/prompts/{prompt_id}")
+def delete_prompt(prompt_id: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    return _ok_ou_404(prompts_store.delete(prompt_id, user["id"]), "Prompt introuvable")
+
+
+class PlaybookRule(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+    instruction: str = Field(min_length=1)
+
+
+class PlaybookIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    rules: list[PlaybookRule] = Field(min_length=1)
+    workspace_id: Optional[int] = None
+
+
+def _mes_espaces(user: dict) -> list[int]:
+    return [w["id"] for w in ws.list_workspaces(user["id"])]
+
+
+def _ok_ou_404(supprime: bool, message: str) -> dict:
+    """Réponse {ok:true} si l'opration a affecté une ligne, sinon 404 (uniformise les DELETE)."""
+    if not supprime:
+        raise HTTPException(status_code=404, detail=message)
+    return {"ok": True}
+
+
+def _rag_ou_503(label: str, fn, *args, **kwargs):
+    """Exécute une génération LLM ; sur panne, loggue et renvoie un 503 uniforme (le contrat
+    veut un refus gracieux côté /api/ask ; ces tâches déclenchées explicitement échouent en 503)."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        log.exception(label)
+        raise HTTPException(status_code=503,
+                            detail="La génération a échoué. Réessayez dans un instant.")
+
+
+@app.post("/api/playbooks")
+def create_playbook(body: PlaybookIn, authorization: Optional[str] = Header(None)) -> dict:
+    """Playbook de revue de contrats : règles maison (perso ou partagées au cabinet)."""
+    user = _require_user(authorization)
+    if body.workspace_id is not None:
+        _require_ws_role(body.workspace_id, user, ws.ROLES)
+    rules = [r.model_dump() for r in body.rules]
+    return pb_store.create(user["id"], body.name, rules, body.workspace_id)
+
+
+@app.get("/api/playbooks")
+def list_playbooks(authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    return {"items": pb_store.visibles(user["id"], _mes_espaces(user))}
+
+
+@app.delete("/api/playbooks/{playbook_id}")
+def delete_playbook(playbook_id: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    return _ok_ou_404(pb_store.delete(playbook_id, user["id"]), "Playbook introuvable")
+
+
+class ContractReview(BaseModel):
+    playbook_id: int
+
+
+@app.post("/api/vault/documents/{doc_id}/review-contract")
+def vault_review_contract(doc_id: int, body: ContractReview,
+                          authorization: Optional[str] = Header(None)) -> dict:
+    """Revue d'un contrat déposé contre un playbook : verdict par règle (ok/issue/missing),
+    ancré au texte du document. LLM routé « confidentiel »."""
+    user = _require_user(authorization)
+    doc = vault.get_document(doc_id, user["id"])
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    pb = pb_store.get(body.playbook_id, user["id"], _mes_espaces(user))
+    if not pb:
+        raise HTTPException(status_code=404, detail="Playbook introuvable")
+    res = _rag_ou_503("revue de contrat", rag.revue_contrat, doc.get("text") or "", pb["rules"])
+    findings = res["findings"]
+    return {"task": "contract", "playbook": pb["name"], "findings": findings,
+            "summary": {"total": len(findings),
+                        "ok": sum(1 for f in findings if f["status"] == "ok"),
+                        "issue": sum(1 for f in findings if f["status"] == "issue"),
+                        "missing": sum(1 for f in findings if f["status"] == "missing")}}
+
+
+class DraftRequest(BaseModel):
+    instruction: str = Field(min_length=1)
+    topK: int = Field(default=12, ge=1, le=50)
+    filters: SearchFilters = Field(default_factory=SearchFilters)
+
+
+@app.post("/api/draft")
+def draft(body: DraftRequest, authorization: Optional[str] = Header(None)) -> dict:
+    """Rédaction assistée sourcée (courrier/conclusions/note) fondée sur le corpus officiel."""
+    user = _require_user(authorization)
+    try:
+        hits = search.search(body.instruction, body.topK, body.filters)
+    except Exception:
+        log.exception("recherche (draft)")
+        hits = []
+    res = _rag_ou_503("rédaction", rag.rediger, body.instruction, hits)
+    audit.log("draft", user)
+    return {"answer": res["answer"], "refused": res["refused"],
+            "citations": [c.model_dump() for c in res["citations"]]}
+
+
+def _quota_message(user: Optional[dict]) -> Optional[str]:
+    """Message de refus si le quota mensuel (plan étudiant) est épuisé, sinon None."""
+    if not user:
+        return None
+    qi = auth.quota_info(user)
+    if qi["remaining"] is not None and qi["remaining"] <= 0:
+        return (f"Quota mensuel atteint ({qi['limit']} questions/mois, plan étudiant). "
+                "Il se réinitialise le 1er du mois — ou passez au plan pro.")
+    return None
+
+
+def _save_history(user: Optional[dict], question: str, answer, status) -> None:
+    """Enregistre la question dans l'historique si connecté (best-effort, ne lève jamais)."""
+    if not user:
+        return
+    try:
+        auth.add_history(user["id"], question, answer, status)
+    except Exception:
+        log.exception("écriture historique")
 
 
 def _contextual_query(req: AskRequest) -> str:
@@ -555,7 +910,8 @@ def _contextual_query(req: AskRequest) -> str:
 
 @app.post("/api/ask", response_model=AskResponse, response_model_exclude_none=False)
 def ask(req: AskRequest, request: Request,
-        authorization: Optional[str] = Header(None)) -> AskResponse:
+        authorization: Optional[str] = Header(None),
+        x_api_key: Optional[str] = Header(None)) -> AskResponse:
     t0 = time.time()
     metrics.mark_ask()
     metrics.incr("ask_total")
@@ -568,18 +924,14 @@ def ask(req: AskRequest, request: Request,
             "Trop de requêtes en peu de temps. Patientez un instant avant de réessayer."
         )
 
-    user = _current_user(authorization)
+    user = _current_user(authorization, x_api_key)  # session OU clé d'API de service
 
     # Quota mensuel du plan étudiant (freemium)
-    if user:
-        qi = auth.quota_info(user)
-        if qi["remaining"] is not None and qi["remaining"] <= 0:
-            metrics.incr("ask_refused")
-            metrics.record_latency_ms((time.time() - t0) * 1000)
-            return rag.refusal(
-                f"Quota mensuel atteint ({qi['limit']} questions/mois, plan étudiant). "
-                "Il se réinitialise le 1er du mois — ou passez au plan pro."
-            )
+    qmsg = _quota_message(user)
+    if qmsg:
+        metrics.incr("ask_refused")
+        metrics.record_latency_ms((time.time() - t0) * 1000)
+        return rag.refusal(qmsg)
 
     # Recherche nominative d'avocat (Insight) : court-circuite le RAG si un avocat nommé correspond.
     try:
@@ -591,11 +943,7 @@ def ask(req: AskRequest, request: Request,
         resp = AskResponse(answer=look["answer"], citations=look["citations"], refused=False,
                            status="ok", prompt_version=settings.prompt_version)
         metrics.record_latency_ms((time.time() - t0) * 1000)
-        if user:
-            try:
-                auth.add_history(user["id"], req.q, resp.answer, resp.status)
-            except Exception:
-                log.exception("écriture historique")
+        _save_history(user, req.q, resp.answer, resp.status)
         return resp
 
     try:
@@ -621,12 +969,7 @@ def ask(req: AskRequest, request: Request,
     metrics.record_latency_ms((time.time() - t0) * 1000)
 
     # Historique si connecté (best effort, ne casse jamais la réponse)
-    if user:
-        try:
-            auth.add_history(user["id"], req.q, getattr(resp, "answer", None),
-                             getattr(resp, "status", None))
-        except Exception:
-            log.exception("écriture historique")
+    _save_history(user, req.q, getattr(resp, "answer", None), getattr(resp, "status", None))
     return resp
 
 
@@ -647,12 +990,175 @@ def insight_lawyers(q: Optional[str] = None, limit: int = 50, sort: str = "cases
     return {"items": insight.list_lawyers(q, limit, sort=sort, matter=matter)}
 
 
+@app.get("/api/insight/analytics")
+def insight_analytics(matter: Optional[str] = None, juridiction: Optional[str] = None) -> dict:
+    """Analytics contentieux (public) : volumes + taux de succès estimé par matière /
+    juridiction / année. Avocats/parties uniquement (jamais de magistrats)."""
+    return insight.analytics(matter, juridiction)
+
+
 @app.get("/api/insight/lawyers/{key}")
 def insight_lawyer(key: str) -> dict:
     prof = insight.get_lawyer(key)
     if not prof:
         raise HTTPException(status_code=404, detail="Avocat introuvable")
     return prof
+
+
+# ---------- Vault : documents privés de l'utilisateur (dépôt + Q&A + citations) ----------
+_VAULT_MAX_BYTES = 25 * 1024 * 1024  # 25 Mo
+
+
+@app.post("/api/vault/documents")
+async def vault_upload(request: Request, filename: str = "document",
+                       authorization: Optional[str] = Header(None)) -> dict:
+    """Dépôt d'un document (corps brut ; nom via ?filename=). PDF/texte."""
+    user = _require_user(authorization)
+    # Rejet AVANT de charger le corps en mémoire (garde-fou anti-OOM sur l'en-tête).
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > _VAULT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux (max 25 Mo)")
+    data = await request.body()
+    if len(data) > _VAULT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Fichier trop volumineux (max 25 Mo)")
+    text = vault.extract_text(filename, data)
+    doc = vault.create_document(user["id"], filename, request.headers.get("content-type"), text)
+    try:
+        n = vault.index_chunks(user["id"], doc["id"], filename, text)
+        vault.set_status(doc["id"], "ready", n)
+        doc["status"], doc["n_chunks"] = "ready", n
+    except Exception:
+        log.exception("indexation Vault")
+        vault.set_status(doc["id"], "error")
+        doc["status"] = "error"
+    audit.log("vault.upload", user, f"doc={doc['id']} {filename}")
+    return doc
+
+
+@app.get("/api/vault/documents")
+def vault_list(authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    return {"items": vault.list_documents(user["id"])}
+
+
+@app.delete("/api/vault/documents/{doc_id}")
+def vault_delete(doc_id: int, authorization: Optional[str] = Header(None)) -> dict:
+    user = _require_user(authorization)
+    if not vault.get_document(doc_id, user["id"]):
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    try:
+        vault.delete_chunks(user["id"], doc_id)
+    except Exception:
+        log.exception("suppression chunks Vault")
+    vault.delete_document(doc_id, user["id"])
+    audit.log("vault.delete", user, f"doc={doc_id}")
+    return {"ok": True}
+
+
+class VaultAsk(BaseModel):
+    q: str = Field(min_length=1)
+    doc_ids: Optional[list[int]] = None
+    topK: int = Field(default=12, ge=1, le=50)
+    # RAG hybride : interroge AUSSI le corpus public (jurisprudence + Legilux) en plus des
+    # documents privés. La réponse cite les deux — les citations du Vault n'ont pas de
+    # source_type (« votre document »), celles du corpus le portent (source publique).
+    include_corpus: bool = False
+
+
+def _interleave_hits(private: list, public: list) -> list:
+    """Entrelace documents privés (prioritaires) et corpus public, en dédupliquant par
+    doc_id. Les hits du Vault passent d'abord : la question porte sur les documents de
+    l'utilisateur, la jurisprudence vient les éclairer."""
+    out, seen = [], set()
+    for h in [x for pair in zip(private, public) for x in pair] + private + public:
+        if h.doc_id in seen:
+            continue
+        seen.add(h.doc_id)
+        out.append(h)
+    return out
+
+
+@app.post("/api/vault/ask", response_model=AskResponse, response_model_exclude_none=False)
+def vault_ask(body: VaultAsk, authorization: Optional[str] = Header(None)) -> AskResponse:
+    """Q&A sourcé sur les documents du Vault de l'utilisateur (isolé). Si `include_corpus`,
+    croise en une requête les documents privés ET le corpus public officiel (différenciateur
+    Jurilux : aucun Vault généraliste n'a la source de vérité du droit luxembourgeois)."""
+    user = _require_user(authorization)
+    try:
+        hits = vault.search_vault(user["id"], body.q, body.doc_ids, body.topK)
+    except Exception:
+        log.exception("recherche Vault")
+        return rag.refusal("Le Vault est momentanément indisponible. Réessayez dans un instant.")
+    if body.include_corpus:
+        try:
+            public = search.search(body.q, body.topK, SearchFilters())
+        except Exception:
+            log.exception("recherche corpus (Vault hybride)")
+            public = []
+        hits = _interleave_hits(hits, public)
+    if not hits:
+        return rag.refusal("Aucun passage pertinent dans vos documents pour cette question.")
+    try:
+        # Vault = données privées du cabinet → routage LLM « confidentiel » (Mistral UE / local).
+        return rag.answer(body.q, hits, 0.0, sensibilite="confidentiel")
+    except Exception:
+        log.exception("Erreur LLM (Vault)")
+        return rag.refusal("La génération de réponse a échoué. Réessayez dans un instant.")
+
+
+class VaultReview(BaseModel):
+    doc_ids: list[int] = Field(min_length=1)
+
+
+@app.post("/api/vault/review")
+def vault_review(body: VaultReview, authorization: Optional[str] = Header(None)) -> dict:
+    """Revue tabulaire : 1 document = 1 ligne, colonnes extraites (matière, issue, montants,
+    avocats, références) — extraction locale/déterministe via `insight`. Concurrent : Legora."""
+    user = _require_user(authorization)
+    rows = [{"doc_id": doc["id"], "filename": doc["filename"],
+             **vault.extract_structure(doc.get("text") or "")}
+            for doc in vault.get_documents(body.doc_ids, user["id"])]
+    return {"columns": ["matter", "outcome", "amounts", "lawyers", "references"], "rows": rows}
+
+
+class VaultAnalyze(BaseModel):
+    task: str = Field(pattern="^(citations|extract|summary|counter|timeline)$")
+
+
+@app.post("/api/vault/documents/{doc_id}/analyze")
+def vault_analyze(doc_id: int, body: VaultAnalyze,
+                  authorization: Optional[str] = Header(None)) -> dict:
+    """Analyse d'un document déposé :
+    - `task=citations` : extrait les références et les VÉRIFIE contre le corpus officiel
+      (local/déterministe, aucun LLM) — anti-hallucination.
+    - `task=extract` : extraction structurée (avocats/côté, matière, issue, montants) via
+      le pipeline insight (local/déterministe).
+    - `task=summary` : résumé fidèle du document (LLM, routage « confidentiel »).
+    - `task=counter` : contre-argumentaire ancré à la jurisprudence LU réelle, citations
+      vérifiables (LLM + corpus)."""
+    user = _require_user(authorization)
+    doc = vault.get_document(doc_id, user["id"])
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    text = doc.get("text") or ""
+    if body.task == "extract":
+        return {"task": "extract", **vault.extract_structure(text)}
+    if body.task == "timeline":
+        return {"task": "timeline", "events": vault.extract_timeline(text)}
+    if body.task == "summary":
+        return {"task": "summary", "summary": _rag_ou_503("résumé Vault", rag.resume, text)}
+    if body.task == "counter":
+        try:
+            hits = search.search(text[:1000], 12, SearchFilters())
+        except Exception:
+            log.exception("recherche corpus (contre-argumentaire)")
+            hits = []
+        res = _rag_ou_503("contre-argumentaire Vault", rag.contre_argumentaire, text, hits)
+        return {"task": "counter", "answer": res["answer"], "refused": res["refused"],
+                "citations": [c.model_dump() for c in res["citations"]]}
+    checked = vault.verify_references(vault.extract_references(text))
+    return {"task": "citations", "references": checked,
+            "verified": sum(1 for r in checked if r["verified"]), "total": len(checked)}
 
 
 def _sse(event: dict) -> str:
@@ -684,14 +1190,11 @@ def ask_stream(req: AskRequest, request: Request,
             media_type="text/event-stream", headers=headers)
 
     user = _current_user(authorization)
-    if user:
-        qi = auth.quota_info(user)
-        if qi["remaining"] is not None and qi["remaining"] <= 0:
-            metrics.incr("ask_refused")
-            return StreamingResponse(_sse_refusal(
-                f"Quota mensuel atteint ({qi['limit']} questions/mois, plan étudiant). "
-                "Il se réinitialise le 1er du mois — ou passez au plan pro."),
-                media_type="text/event-stream", headers=headers)
+    qmsg = _quota_message(user)
+    if qmsg:
+        metrics.incr("ask_refused")
+        return StreamingResponse(_sse_refusal(qmsg),
+                                 media_type="text/event-stream", headers=headers)
 
     def gen():
         # Recherche nominative d'avocat (Insight) : réponse directe si un avocat nommé correspond.
@@ -707,11 +1210,7 @@ def ask_stream(req: AskRequest, request: Request,
                         "refused": False, "status": "ok", "suggested_question": None,
                         "feedback": None, "prompt_version": settings.prompt_version})
             metrics.record_latency_ms((time.time() - t0) * 1000)
-            if user:
-                try:
-                    auth.add_history(user["id"], req.q, look["answer"], "ok")
-                except Exception:
-                    log.exception("écriture historique")
+            _save_history(user, req.q, look["answer"], "ok")
             return
 
         try:
@@ -741,11 +1240,8 @@ def ask_stream(req: AskRequest, request: Request,
         metrics.record_latency_ms((time.time() - t0) * 1000)
         if final and final.get("refused"):
             metrics.incr("ask_refused")
-        if user and final:
-            try:
-                auth.add_history(user["id"], req.q, final.get("answer"), final.get("status"))
-            except Exception:
-                log.exception("écriture historique")
+        if final:
+            _save_history(user, req.q, final.get("answer"), final.get("status"))
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 

@@ -50,8 +50,11 @@ class AskResponse(BaseModel):
     status: Optional[Literal["ok", "partial"]] = "ok"
     feedback: Optional[Feedback] = None
     # Cinématique de rebond : question voisine que le modèle PEUT traiter avec les
-    # extraits trouvés — proposée surtout en cas de refus/partiel (pivot 1 clic).
+    # extraits trouvés — proposée surtout en cas de refus/partiel (pivot 1 clic, AUTRE angle).
     suggested_question: Optional[str] = None
+    # Parcours guidé : série de questions de suivi LOGIQUES et ordonnées qui, enchaînées,
+    # mènent à une réponse complète sur le même sujet (ajout optionnel rétrocompatible).
+    follow_ups: Optional[List[str]] = None
     prompt_version: Optional[str] = None
 
 

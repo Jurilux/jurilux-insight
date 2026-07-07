@@ -6,19 +6,9 @@ côté endpoint (voir app.main._require_admin). SQLite, stdlib uniquement.
 """
 from __future__ import annotations
 
-import datetime
 from typing import List, Optional
 
-from .db import get_conn
-
-
-def _now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-
-def _hours_ago_iso(hours: int) -> str:
-    return (datetime.datetime.now(datetime.timezone.utc)
-            - datetime.timedelta(hours=hours)).isoformat()
+from .db import get_conn, iso_ago
 
 
 # ---------- statistiques ----------
@@ -37,8 +27,7 @@ def user_stats() -> dict:
 
 def questions_per_day(days: int = 14) -> List[dict]:
     """Nombre de questions loggées par jour (derniers `days` jours) — mini-graphe d'activité."""
-    since = (datetime.datetime.now(datetime.timezone.utc)
-             - datetime.timedelta(days=days)).isoformat()
+    since = iso_ago(days=days)
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT substr(created_at, 1, 10) AS d, COUNT(*) AS n FROM history "
@@ -52,7 +41,7 @@ def question_stats() -> dict:
         total = conn.execute("SELECT COUNT(*) AS n FROM history").fetchone()["n"]
         last24 = conn.execute(
             "SELECT COUNT(*) AS n FROM history WHERE created_at >= ?",
-            (_hours_ago_iso(24),)).fetchone()["n"]
+            (iso_ago(hours=24),)).fetchone()["n"]
         partial = conn.execute(
             "SELECT COUNT(*) AS n FROM history WHERE status = 'partial'").fetchone()["n"]
     return {"total": total, "last_24h": last24, "partial": partial}

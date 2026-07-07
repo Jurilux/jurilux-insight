@@ -77,6 +77,24 @@ def test_insight_store_and_profile(temp_db):
     assert insight.list_lawyers("thielen", 10)[0]["name"] == "Lex THIELEN"
 
 
+def test_analytics_taux_et_volumes(temp_db):
+    insight.record_many([
+        ("A A", "A A", "d1", 2020, "csj", "A", 1, "Droit du travail"),
+        ("B B", "B B", "d1", 2020, "csj", "B", 0, "Droit du travail"),
+        ("C C", "C C", "d2", 2021, "tal", "A", 1, "Bail / logement"),
+        ("D D", "D D", "d3", 2021, "tal", "A", None, "Bail / logement"),  # issue non estimable
+    ])
+    a = insight.analytics()
+    assert a["overall"]["cases"] == 4 and a["overall"]["decided"] == 3 and a["overall"]["won"] == 2
+    assert a["overall"]["win_rate"] == round(2 / 3, 3) and a["overall"]["lawyers"] == 4
+    travail = next(m for m in a["by_matter"] if m["cle"] == "Droit du travail")
+    assert travail["cases"] == 2 and travail["decided"] == 2 and travail["win_rate"] == 0.5
+    # filtre par matière
+    b = insight.analytics(matter="Bail / logement")
+    assert b["overall"]["cases"] == 2 and b["overall"]["decided"] == 1 and b["overall"]["win_rate"] == 1.0
+    assert {y["cle"] for y in a["by_year"]} == {2020, 2021}
+
+
 def test_lawyer_lookup(temp_db):
     insight.record_many([
         ("GUY CASTEGNARO", "Guy CASTEGNARO", "20200101_TAL_1", 2020, None, "A", 1, "Droit du travail"),

@@ -64,6 +64,21 @@ def create_user(email: str, password: str) -> dict:
         return {"id": cur.lastrowid, "email": email, "plan": "student", "is_admin": 0}
 
 
+def user_by_email(email: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT id, email, plan, is_admin FROM users WHERE email = ?",
+                           (email.strip().lower(),)).fetchone()
+    return dict(row) if row else None
+
+
+def ensure_user(email: str) -> dict:
+    """Récupère le compte par e-mail ou le crée (usage SSO : mot de passe aléatoire inutilisable)."""
+    existing = user_by_email(email)
+    if existing:
+        return existing
+    return create_user(email, secrets.token_urlsafe(24))
+
+
 def authenticate(email: str, password: str) -> Optional[dict]:
     email = email.strip().lower()
     with get_conn() as conn:

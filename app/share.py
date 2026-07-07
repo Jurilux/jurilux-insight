@@ -6,12 +6,11 @@ d'acquisition « produit » : partager une réponse sourcée = démo gratuite. S
 """
 from __future__ import annotations
 
-import datetime
 import json
 import secrets
 from typing import List, Optional
 
-from .db import get_conn
+from .db import get_conn, loads_list, now_iso
 
 _MAX_Q = 2000
 _MAX_A = 20000
@@ -20,14 +19,13 @@ _MAX_CITES = 60000
 
 def create(user_id: Optional[int], question: str, answer: Optional[str],
            citations: List[dict], status: Optional[str]) -> str:
-    token = secrets.token_urlsafe(8)
+    token = secrets.token_urlsafe(16)  # 128 bits : non énumérable (lien public)
     cites = json.dumps(citations)[:_MAX_CITES]
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO shares(id, user_id, question, answer, citations, status, created_at) "
             "VALUES (?,?,?,?,?,?,?)",
-            (token, user_id, question[:_MAX_Q], (answer or "")[:_MAX_A], cites, status,
-             datetime.datetime.now(datetime.timezone.utc).isoformat()))
+            (token, user_id, question[:_MAX_Q], (answer or "")[:_MAX_A], cites, status, now_iso()))
     return token
 
 
@@ -38,9 +36,6 @@ def get(token: str) -> Optional[dict]:
             (token,)).fetchone()
     if not row:
         return None
-    try:
-        cites = json.loads(row["citations"] or "[]")
-    except Exception:
-        cites = []
-    return {"question": row["question"], "answer": row["answer"], "citations": cites,
+    return {"question": row["question"], "answer": row["answer"],
+            "citations": loads_list(row["citations"]),
             "status": row["status"], "created_at": row["created_at"]}

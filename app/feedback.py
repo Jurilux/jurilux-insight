@@ -5,25 +5,25 @@ au backoffice. SQLite, stdlib. La table est créée dans db.init_db().
 """
 from __future__ import annotations
 
-import datetime
 from typing import List, Optional
 
-from .db import get_conn
+from .db import get_conn, now_iso
 
 
-def _now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+_MAX_Q = 2000
+_MAX_MISS = 2000
 
 
 def add(user_id: Optional[int], question: str, helpful: bool,
         missing: Optional[str], status: Optional[str],
         prompt_version: Optional[str]) -> None:
+    # Bornes de taille (cohérent avec share.py/workspace.py ; entrée publique non authentifiée).
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO feedback(user_id, question, helpful, missing, status, "
             "prompt_version, created_at) VALUES (?,?,?,?,?,?,?)",
-            (user_id, question, 1 if helpful else 0,
-             (missing or None), status, prompt_version, _now_iso()))
+            (user_id, question[:_MAX_Q], 1 if helpful else 0,
+             (missing[:_MAX_MISS] if missing else None), status, prompt_version, now_iso()))
 
 
 def stats() -> dict:
