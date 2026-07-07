@@ -154,3 +154,19 @@ def test_insight_b2b_endpoints(temp_db):
     exp = client.get("/api/insight/export/lawyers.csv")
     assert exp.status_code == 200 and "text/csv" in exp.headers["content-type"]
     assert "attachment" in exp.headers.get("content-disposition", "")
+
+
+def test_rgpd_request(temp_db):
+    # Demande valide (opposition) -> enregistrée et listable par un admin.
+    ok = client.post("/api/insight/rgpd-request",
+                     json={"name": "Maître Jean TESTUS", "kind": "opposition", "email": "a@b.lu"})
+    assert ok.status_code == 200 and ok.json()["ok"] is True
+    # Type invalide -> 422 (garde-fou).
+    bad = client.post("/api/insight/rgpd-request", json={"name": "X", "kind": "n_importe_quoi"})
+    assert bad.status_code == 422
+    # Nom trop court -> 422.
+    short = client.post("/api/insight/rgpd-request", json={"name": "x", "kind": "acces"})
+    assert short.status_code == 422
+    # Store : une seule demande valide enregistrée.
+    reqs = insight.list_rgpd_requests()
+    assert len(reqs) == 1 and reqs[0]["kind"] == "opposition" and reqs[0]["status"] == "ouverte"

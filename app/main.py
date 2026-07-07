@@ -1028,6 +1028,35 @@ def insight_export_lawyers(q: Optional[str] = None, limit: int = 200, sort: str 
                     headers={"Content-Disposition": "attachment; filename=avocats.csv"})
 
 
+class RgpdRequestIn(BaseModel):
+    name: str
+    kind: str = Field(description="acces | rectification | opposition")
+    email: Optional[str] = None
+    message: Optional[str] = None
+
+
+@app.post("/api/insight/rgpd-request")
+def insight_rgpd_request(req: RgpdRequestIn) -> dict:
+    """Exercice des droits RGPD/CNPD sur le profilage d'un avocat nommé (PUBLIC).
+    Le profilage portant sur des personnes, ce canal d'accès/rectification/opposition est requis."""
+    try:
+        rec = insight.record_rgpd_request(req.name, req.kind, req.email, req.message)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    try:
+        audit.log("insight.rgpd_request", detail=f"{rec['kind']}:{rec['name']}")
+    except Exception:
+        pass
+    return {"ok": True, "id": rec["id"]}
+
+
+@app.get("/api/admin/insight/rgpd-requests")
+def insight_rgpd_requests(authorization: Optional[str] = Header(None)) -> dict:
+    """Revue des demandes RGPD reçues (gate admin)."""
+    _require_admin(authorization)
+    return {"items": insight.list_rgpd_requests()}
+
+
 @app.get("/api/insight/lawyers/{key}")
 def insight_lawyer(key: str) -> dict:
     prof = insight.get_lawyer(key)

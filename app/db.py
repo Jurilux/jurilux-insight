@@ -237,6 +237,19 @@ CREATE TABLE IF NOT EXISTS playbooks (
 );
 CREATE INDEX IF NOT EXISTS idx_playbooks_owner ON playbooks(owner_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_playbooks_ws ON playbooks(workspace_id, id DESC);
+
+-- Demandes RGPD/CNPD sur le profilage d'un avocat nommé (droit d'accès/rectification/opposition).
+-- Le profilage porte sur des personnes → obligation de fournir un canal d'exercice des droits.
+CREATE TABLE IF NOT EXISTS insight_rgpd_requests (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,           -- avocat concerné (tel que saisi)
+    kind         TEXT NOT NULL,           -- acces | rectification | opposition
+    email        TEXT,                    -- contact du demandeur (optionnel)
+    message      TEXT,                    -- précisions
+    status       TEXT NOT NULL DEFAULT 'ouverte',
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rgpd_requests ON insight_rgpd_requests(status, id DESC);
 """
 
 

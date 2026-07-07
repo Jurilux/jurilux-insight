@@ -75,6 +75,40 @@ CAS = [
              "GET /api/insight/lawyers/ZZZINCONNU : avocat introuvable → 404.",
              "GET", "/api/insight/lawyers/ZZZINCONNU",
              {"anonyme": refuse(404)}),
+
+    # === /api/insight/overview (public) — KPIs d'en-tête du dashboard ===
+    CasUsage("insight-overview", "Insight — vue d'ensemble (public)",
+             "GET /api/insight/overview : KPIs globaux (avocats, décisions, taux) + tops.",
+             "GET", "/api/insight/overview",
+             {"anonyme": ok(lambda j: j["lawyers"] >= 1 and "top_matters" in j and "win_rate" in j)}),
+
+    # === /api/insight/compare (public) — benchmark côte à côte ===
+    CasUsage("insight-compare", "Insight — comparateur (public)",
+             "GET /api/insight/compare?keys=a,b : benchmark de 2 avocats → profils condensés.",
+             "GET", "/api/insight/compare?keys=MAITRE%20JEAN%20DUPONT,MAITRE%20ANNE%20MARTIN",
+             {"anonyme": ok(lambda j: len(j["profiles"]) == 2)}),
+    CasUsage("insight-compare-422", "Insight — comparateur (public)",
+             "GET /api/insight/compare?keys=un-seul : moins de 2 avocats → 422.",
+             "GET", "/api/insight/compare?keys=MAITRE%20JEAN%20DUPONT",
+             {"anonyme": refuse(422)}),
+
+    # === /api/insight/export/lawyers.csv (public) — export tableur ===
+    CasUsage("insight-export-csv", "Insight — export CSV (public)",
+             "GET /api/insight/export/lawyers.csv : téléchargement CSV (pièce jointe).",
+             "GET", "/api/insight/export/lawyers.csv",
+             {"anonyme": ok(lambda j: True)}),
+
+    # === /api/insight/rgpd-request (public) — exercice des droits (conformité RGPD/CNPD) ===
+    CasUsage("insight-rgpd-ok", "Insight — demande RGPD (public)",
+             "POST /api/insight/rgpd-request : opposition d'un avocat profilé → {ok:true}.",
+             "POST", "/api/insight/rgpd-request",
+             {"anonyme": ok(lambda j: j.get("ok") is True)},
+             corps={"name": "Maître Jean TESTUS", "kind": "opposition", "email": "a@b.lu"}),
+    CasUsage("insight-rgpd-422", "Insight — demande RGPD (public)",
+             "POST /api/insight/rgpd-request : type de demande invalide → 422.",
+             "POST", "/api/insight/rgpd-request",
+             {"anonyme": refuse(422)},
+             corps={"name": "Maître Jean TESTUS", "kind": "n_importe_quoi"}),
 ]
 
 PARCOURS = []

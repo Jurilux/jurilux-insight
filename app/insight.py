@@ -311,6 +311,36 @@ def compare(keys: List[str]) -> dict:
     return {"profiles": profiles}
 
 
+_RGPD_KINDS = {"acces", "rectification", "opposition"}
+
+
+def record_rgpd_request(name: str, kind: str, email: Optional[str] = None,
+                        message: Optional[str] = None) -> dict:
+    """Enregistre une demande RGPD/CNPD (droit d'accès/rectification/opposition) sur le
+    profilage d'un avocat nommé. Le profilage portant sur des personnes, ce canal est requis."""
+    name = (name or "").strip()
+    kind = (kind or "").strip().lower()
+    if len(name) < 2:
+        raise ValueError("nom de l'avocat requis")
+    if kind not in _RGPD_KINDS:
+        raise ValueError("type de demande invalide (acces | rectification | opposition)")
+    from .db import now_iso  # horodatage commun du module db
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO insight_rgpd_requests(name, kind, email, message, status, created_at) "
+            "VALUES (?,?,?,?, 'ouverte', ?)",
+            (name, kind, (email or "").strip() or None, (message or "").strip() or None, now_iso()))
+        return {"id": cur.lastrowid, "name": name, "kind": kind, "status": "ouverte"}
+
+
+def list_rgpd_requests(limit: int = 200) -> List[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, name, kind, email, message, status, created_at "
+            "FROM insight_rgpd_requests ORDER BY id DESC LIMIT ?", (max(1, min(limit, 500)),)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def export_lawyers_csv(q: Optional[str] = None, limit: int = 200, sort: str = "cases",
                        matter: Optional[str] = None) -> str:
     """Export CSV de la liste d'avocats (mêmes filtres/tri que list_lawyers). Taux de succès
