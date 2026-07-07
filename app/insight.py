@@ -245,11 +245,11 @@ def record_many(rows) -> int:
     [, amount[, firm[, articles[, sens]]]]). Champs 9–12 optionnels → None si absents.
     `articles` peut être une liste (jointe par « ; ») ou une chaîne déjà jointe. INSERT OR IGNORE."""
     def _prep(r):
-        r = (tuple(r) + (None, None, None, None))[:12]
-        arts = r[10]
+        # Complète à 12 champs (montant, cabinet, articles, sens optionnels) ; `articles` liste → chaîne.
+        name_k, disp, doc, year, jur, side, won, matter, amount, firm, arts, sens = (tuple(r) + (None,) * 4)[:12]
         if isinstance(arts, (list, tuple)):
             arts = "; ".join(arts) if arts else None
-        return r[:10] + (arts, r[11])
+        return (name_k, disp, doc, year, jur, side, won, matter, amount, firm, arts, sens)
     norm = [_prep(r) for r in rows]
     if not norm:
         return 0
@@ -282,62 +282,61 @@ def _taux(won: int, decided: int) -> Optional[float]:
 
 def analytics(matter: Optional[str] = None, juridiction: Optional[str] = None) -> dict:
     """Analytics contentieux (données PUBLIQUES de jurisprudence, avocats/parties uniquement —
-    jamais de magistrats). Volumes et taux de succès ESTIMÉ (indicatif) par matière, par
-    juridiction et par année. `decided` = apparitions dont l'issue est estimable.
-
-    NB : pas de montants ici — l'index insight ne les extrait pas encore (extension future de
-    `insight_build.py`). Filtres optionnels : `matter`, `juridiction`."""
+    jamais de magistrats). Volumes, taux de succès ESTIMÉ (indicatif) et montant médian estimé,
+    par matière, par juridiction et par année. `decided` = apparitions dont l'issue est estimable.
+    Filtres optionnels : `matter`, `juridiction`."""
     where, args = [], []
     if matter:
         where.append("matter = ?"); args.append(matter)
     if juridiction:
         where.append("juridiction_key = ?"); args.append(juridiction)
     clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
-
-    # Médianes de montants par dimension (SQLite n'a pas de MEDIAN) → calcul Python en un passage.
-    def _amounts_by(conn, dim: str) -> dict:
-        acc: dict = {}
-        for r in conn.execute(
-                f"SELECT {dim} AS cle, amount FROM insight_appearances {clause}"
-                f"{'AND' if clause else 'WHERE'} amount IS NOT NULL", args).fetchall():
-            acc.setdefault(r["cle"], []).append(r["amount"])
-        return {k: (_median(v), len(v)) for k, v in acc.items()}
-
-    # Les agrégations sont indépendantes → une seule connexion partagée.
-    def _agg(conn, dim: str) -> list:
-        amt = _amounts_by(conn, dim)
-        rows = conn.execute(
-            f"SELECT {dim} AS cle, COUNT(*) cases, "
-            "SUM(CASE WHEN won IN (0,1) THEN 1 ELSE 0 END) decided, "
-            "SUM(CASE WHEN won = 1 THEN 1 ELSE 0 END) won "
-            f"FROM insight_appearances {clause}"
-            f"GROUP BY {dim} HAVING cle IS NOT NULL ORDER BY cases DESC", args).fetchall()
-        out = []
-        for r in rows:
-            med, n = amt.get(r["cle"], (None, 0))
-            out.append({"cle": r["cle"], "cases": r["cases"], "decided": r["decided"],
-                        "won": r["won"], "win_rate": _taux(r["won"], r["decided"]),
-                        "amount_median": med, "amount_n": n})
-        return out
+    amt_where = clause + ("AND" if clause else "WHERE") + " amount IS NOT NULL"
 
     with get_conn() as conn:
+        # Montants : SQLite n'a pas de MEDIAN → on charge les montants UNE fois, puis on
+        # calcule les médianes par dimension (matière/juridiction/année) et globale en Python.
+        amt_rows = conn.execute(
+            f"SELECT matter, juridiction_key, year, amount FROM insight_appearances {amt_where}", args).fetchall()
+
+        def _amt_by(dim: Optional[str]) -> dict:
+            acc: dict = {}
+            for r in amt_rows:
+                acc.setdefault(None if dim is None else r[dim], []).append(r["amount"])
+            return {k: (_median(v), len(v)) for k, v in acc.items()}
+
+        amt = {d: _amt_by(d) for d in ("matter", "juridiction_key", "year")}
+        overall_amt = _amt_by(None).get(None, (None, 0))
+
+        def _agg(dim: str) -> list:
+            rows = conn.execute(
+                f"SELECT {dim} AS cle, COUNT(*) cases, "
+                "SUM(CASE WHEN won IN (0,1) THEN 1 ELSE 0 END) decided, "
+                "SUM(CASE WHEN won = 1 THEN 1 ELSE 0 END) won "
+                f"FROM insight_appearances {clause}"
+                f"GROUP BY {dim} HAVING cle IS NOT NULL ORDER BY cases DESC", args).fetchall()
+            out = []
+            for r in rows:
+                med, n = amt[dim].get(r["cle"], (None, 0))
+                out.append({"cle": r["cle"], "cases": r["cases"], "decided": r["decided"],
+                            "won": r["won"], "win_rate": _taux(r["won"], r["decided"]),
+                            "amount_median": med, "amount_n": n})
+            return out
+
         g = conn.execute(
             "SELECT COUNT(*) cases, "
             "SUM(CASE WHEN won IN (0,1) THEN 1 ELSE 0 END) decided, "
             "SUM(CASE WHEN won = 1 THEN 1 ELSE 0 END) won, "
             "COUNT(DISTINCT name_key) lawyers "
             f"FROM insight_appearances {clause}", args).fetchone()
-        all_amts = [r["amount"] for r in conn.execute(
-            f"SELECT amount FROM insight_appearances {clause}"
-            f"{'AND' if clause else 'WHERE'} amount IS NOT NULL", args).fetchall()]
         return {
             "overall": {"cases": g["cases"] or 0, "decided": g["decided"] or 0,
                         "won": g["won"] or 0, "win_rate": _taux(g["won"] or 0, g["decided"] or 0),
                         "lawyers": g["lawyers"] or 0,
-                        "amount_median": _median(all_amts), "amount_n": len(all_amts)},
-            "by_matter": _agg(conn, "matter"),
-            "by_juridiction": _agg(conn, "juridiction_key"),
-            "by_year": _agg(conn, "year"),
+                        "amount_median": overall_amt[0], "amount_n": overall_amt[1]},
+            "by_matter": _agg("matter"),
+            "by_juridiction": _agg("juridiction_key"),
+            "by_year": _agg("year"),
         }
 
 

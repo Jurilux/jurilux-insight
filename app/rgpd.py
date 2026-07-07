@@ -5,8 +5,6 @@ Purge : minimisation — supprime les données au-delà d'une ancienneté config
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from .db import get_conn, iso_ago
 
 
