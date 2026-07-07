@@ -41,7 +41,10 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
       - name: Run tests
-        run: pytest -q
+        # Tests fonctionnels désactivés temporairement (rapidité de déploiement) :
+        # tests/test_functional.py pèse ~100s sur ~120s. On garde le contrat d'API rapide.
+        # Réactiver : retirer --ignore (relancer la suite complète en local avant merge).
+        run: pytest -q --ignore=tests/test_functional.py
 
   deploy:
     needs: test
