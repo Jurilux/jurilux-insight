@@ -1004,6 +1004,30 @@ def insight_analytics(matter: Optional[str] = None, juridiction: Optional[str] =
     return insight.analytics(matter, juridiction)
 
 
+@app.get("/api/insight/overview")
+def insight_overview() -> dict:
+    """Vue d'ensemble du dashboard (accueil analytics B2B) : KPIs globaux + tops."""
+    return insight.overview()
+
+
+@app.get("/api/insight/compare")
+def insight_compare(keys: str = "") -> dict:
+    """Benchmark côte à côte : ?keys=key1,key2,... (2 à 6 avocats)."""
+    ks = [k.strip() for k in keys.split(",") if k.strip()]
+    if len(ks) < 2:
+        raise HTTPException(status_code=422, detail="Fournir au moins 2 avocats (keys=cle1,cle2).")
+    return insight.compare(ks)
+
+
+@app.get("/api/insight/export/lawyers.csv")
+def insight_export_lawyers(q: Optional[str] = None, limit: int = 200, sort: str = "cases",
+                           matter: Optional[str] = None) -> Response:
+    """Export CSV de la liste d'avocats (téléchargement tableur)."""
+    body = insight.export_lawyers_csv(q, limit, sort=sort, matter=matter)
+    return Response(content=body, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": "attachment; filename=avocats.csv"})
+
+
 @app.get("/api/insight/lawyers/{key}")
 def insight_lawyer(key: str) -> dict:
     prof = insight.get_lawyer(key)

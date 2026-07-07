@@ -112,3 +112,45 @@ def test_insight_public(temp_db):
     # Déploiement client : Insight accessible par défaut (plus de gate admin).
     assert client.get("/api/insight/lawyers").status_code == 200
     assert client.get("/api/insight/stats").status_code == 200
+
+
+def test_overview_compare_export(temp_db):
+    insight.record_many([
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d1", 2020, "csj", "A", 1, "Droit du travail"),
+        ("GUY CASTEGNARO", "Guy CASTEGNARO", "d2", 2021, "tal", "B", 0, "Bail / logement"),
+        ("LEX THIELEN", "Lex THIELEN", "d1", 2020, "csj", "B", 0, "Droit du travail"),
+    ])
+    # overview : KPIs d'en-tête du dashboard
+    ov = insight.overview()
+    assert ov["lawyers"] == 2 and ov["cases"] == 3 and ov["decided"] == 3 and ov["won"] == 1
+    assert ov["first_year"] == 2020 and ov["last_year"] == 2021
+    assert any(m["cle"] == "Droit du travail" for m in ov["top_matters"])
+
+    # compare : benchmark côte à côte (déduplication + profils condensés)
+    cmp = insight.compare(["GUY CASTEGNARO", "LEX THIELEN", "GUY CASTEGNARO"])
+    assert len(cmp["profiles"]) == 2
+    guy = next(p for p in cmp["profiles"] if p["name_key"] == "GUY CASTEGNARO")
+    assert guy["cases"] == 2 and guy["won"] == 1 and guy["decided"] == 2 and guy["win_rate"] == 0.5
+    assert guy["as_demandeur"] == 1 and guy["as_defendeur"] == 1
+
+    # export CSV : entête + une ligne par avocat
+    csv_text = insight.export_lawyers_csv()
+    lines = [l for l in csv_text.splitlines() if l]
+    assert lines[0].startswith("name_key,avocat,decisions")
+    assert len(lines) == 3 and any("Guy CASTEGNARO" in l for l in lines)
+
+
+def test_insight_b2b_endpoints(temp_db):
+    insight.record_many([
+        ("A A", "Anne AUBER", "d1", 2020, "csj", "A", 1, "Droit du travail"),
+        ("B B", "Bob BECK", "d1", 2020, "csj", "B", 0, "Droit du travail"),
+    ])
+    assert client.get("/api/insight/overview").status_code == 200
+    # compare exige au moins 2 clés -> 422 sinon
+    assert client.get("/api/insight/compare", params={"keys": "A A"}).status_code == 422
+    r = client.get("/api/insight/compare", params={"keys": "A A,B B"})
+    assert r.status_code == 200 and len(r.json()["profiles"]) == 2
+    # export : content-type CSV + pièce jointe
+    exp = client.get("/api/insight/export/lawyers.csv")
+    assert exp.status_code == 200 and "text/csv" in exp.headers["content-type"]
+    assert "attachment" in exp.headers.get("content-disposition", "")

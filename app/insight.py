@@ -263,6 +263,74 @@ def _cocounsel(conn_key: str, limit: int = 12) -> List[dict]:
     return out
 
 
+# ---------- dashboard B2B : vue d'ensemble, benchmark d'avocats, export ----------
+# Surface principale du produit : ces fonctions agrègent les données PUBLIQUES de jurisprudence
+# (avocats/parties uniquement, JAMAIS de magistrats) pour alimenter les tableaux de bord.
+def overview() -> dict:
+    """KPIs d'en-tête du dashboard (accueil analytics). Volumétrie globale + têtes de liste
+    matières / juridictions, sur une seule requête agrégée (via analytics)."""
+    a = analytics()
+    ov = a["overall"]
+    years = [y["cle"] for y in a["by_year"] if y["cle"] is not None]
+    return {
+        "lawyers": ov["lawyers"],
+        "cases": ov["cases"],
+        "decided": ov["decided"],
+        "won": ov["won"],
+        "win_rate": ov["win_rate"],
+        "first_year": min(years) if years else None,
+        "last_year": max(years) if years else None,
+        "top_matters": a["by_matter"][:6],
+        "top_juridictions": a["by_juridiction"][:6],
+    }
+
+
+def compare(keys: List[str]) -> dict:
+    """Benchmark côte à côte de plusieurs avocats (2 à 6 profils). Chaque colonne est un
+    profil condensé : volume, taux de succès ESTIMÉ (indicatif), répartition demandeur/
+    défendeur, période et top matières. `keys` = name_key (issus de list_lawyers)."""
+    profiles = []
+    seen: set = set()
+    for k in keys[:6]:
+        key = name_key(k)
+        if key in seen:
+            continue
+        seen.add(key)
+        p = get_lawyer(key)
+        if not p:
+            continue
+        profiles.append({
+            "name_key": p["name_key"], "name": p["name"],
+            "cases": p["cases_count"],
+            "won": p["won"], "lost": p["lost"], "decided": p["decided"],
+            "win_rate": _taux(p["won"], p["decided"]),
+            "as_demandeur": p["as_demandeur"], "as_defendeur": p["as_defendeur"],
+            "first_year": p["first_year"], "last_year": p["last_year"],
+            "matters": p["matters"][:4],
+        })
+    return {"profiles": profiles}
+
+
+def export_lawyers_csv(q: Optional[str] = None, limit: int = 200, sort: str = "cases",
+                       matter: Optional[str] = None) -> str:
+    """Export CSV de la liste d'avocats (mêmes filtres/tri que list_lawyers). Taux de succès
+    ESTIMÉ recalculé par ligne. Pour l'export B2B (tableur cabinet/assureur)."""
+    import csv
+    import io
+    rows = list_lawyers(q, limit, sort=sort, matter=matter)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["name_key", "avocat", "decisions", "gagnees_estim", "estimables",
+                "taux_succes_estim", "premiere_annee", "derniere_annee"])
+    for r in rows:
+        decided = r.get("decided") or 0
+        won = r.get("won") or 0
+        wr = _taux(won, decided)
+        w.writerow([r["name_key"], r["name"], r["cases"], won, decided,
+                    "" if wr is None else wr, r["first_year"], r["last_year"]])
+    return buf.getvalue()
+
+
 # ---------- recherche nominative d'avocat depuis une question en langage naturel ----------
 _LAWYER_HINT = re.compile(r"avocate?|ma[iî]tre|barreau|\bconseil\b|plaid|plaideur|plaidoirie", re.IGNORECASE)
 _Q_STRIP = re.compile(
