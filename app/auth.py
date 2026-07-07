@@ -79,6 +79,27 @@ def ensure_user(email: str) -> dict:
     return create_user(email, secrets.token_urlsafe(24))
 
 
+def ensure_demo_account(email: str = "demo@demo.lu", password: str = "demo") -> None:
+    """Sème un compte de démonstration idempotent (« demo/demo ») au démarrage.
+
+    Le site étant désormais privé (mur d'authentification), ce compte permet un accès
+    d'essai immédiat. On insère directement le hash pbkdf2 sans passer par create_user :
+    le mot de passe volontairement court (« demo ») ne respecte pas le minimum de 8
+    caractères de l'inscription, mais authenticate() ne contrôle pas la longueur.
+    À NE PAS appeler sous les tests (voir main._startup) : ne polluer aucune base de test.
+    """
+    email = email.strip().lower()
+    if user_by_email(email):
+        return
+    with get_conn() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO users(email, password_hash, created_at) VALUES (?,?,?)",
+                (email, hash_password(password), _iso(_now())))
+        except sqlite3.IntegrityError:
+            pass  # course au démarrage : un autre worker l'a créé — bénin
+
+
 def authenticate(email: str, password: str) -> Optional[dict]:
     email = email.strip().lower()
     with get_conn() as conn:

@@ -8,6 +8,7 @@ Endpoints :
 """
 import json
 import logging
+import sys
 import time
 from collections import defaultdict, deque
 from typing import Optional
@@ -36,6 +37,12 @@ def _startup() -> None:
         db.init_db()
     except Exception:
         log.exception("init DB (espace utilisateur) a échoué")
+    # Compte de démonstration « demo/demo » — jamais sous les tests (ne pas polluer la base jetable).
+    if "pytest" not in sys.modules:
+        try:
+            auth.ensure_demo_account()
+        except Exception:
+            log.exception("seed du compte de démo a échoué")
 
 # Rate-limit /api/ask par IP (fenêtre glissante 60 s, en mémoire process).
 # Chaque appel consomme un crédit LLM → garde-fou anti-abus/coût sur endpoint public.
