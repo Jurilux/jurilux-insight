@@ -50,6 +50,40 @@ _MATTER_RE = [
 _DOCID_MATTER = [("TRAVAIL", "Droit du travail"), ("BAIL", "Bail / logement")]
 
 
+# --- montants (quantum) : sommes en euros du dispositif, extraction déterministe ---
+# Nombre au format européen (12.345,67 / 12 345,67 / 1234), suivi d'un marqueur monétaire.
+_AMOUNT_RE = re.compile(
+    r"(\d{1,3}(?:[.\s ]\d{3})+(?:,\d{1,2})?|\d+(?:,\d{1,2})?)\s*(?:€|EUR\b|euros?\b)",
+    re.IGNORECASE)
+_AMOUNT_MIN = 100.0            # sous 100 € : bruit (frais symboliques, art. de loi) → ignoré
+_AMOUNT_MAX = 500_000_000.0   # garde-fou anti-aberration
+
+
+def _parse_amount(raw: str) -> Optional[float]:
+    s = raw.strip().replace(" ", "").replace(" ", "").replace(".", "").replace(",", ".")
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return v if _AMOUNT_MIN <= v <= _AMOUNT_MAX else None
+
+
+def extract_amount(text: str) -> Optional[float]:
+    """Montant € ESTIMÉ d'une décision (indicatif) : la plus grande somme plausible mentionnée
+    (le principal domine généralement intérêts/frais). Aucune certitude — heuristique locale."""
+    vals = [v for m in _AMOUNT_RE.finditer(text or "") if (v := _parse_amount(m.group(1))) is not None]
+    return max(vals) if vals else None
+
+
+def _median(vals: List[float]) -> Optional[float]:
+    s = sorted(vals)
+    n = len(s)
+    if not n:
+        return None
+    mid = n // 2
+    return round(s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2, 2)
+
+
 def matter_hits(text: str, counter) -> None:
     """Accumule les occurrences de mots-clés par domaine dans le Counter fourni."""
     for name, rx in _MATTER_RE:
@@ -116,15 +150,17 @@ def parse_chunk(text: str) -> dict:
 
 # ---------- accès données ----------
 def record_many(rows) -> int:
-    """rows: (name_key, display_name, doc_id, year, juridiction_key, side, won, matter). INSERT OR IGNORE."""
-    rows = list(rows)
-    if not rows:
+    """rows: (name_key, display_name, doc_id, year, juridiction_key, side, won, matter[, amount]).
+    Le 9e champ (montant € estimé) est optionnel → None si absent. INSERT OR IGNORE."""
+    norm = [tuple(r) + (None,) if len(r) == 8 else tuple(r) for r in rows]
+    if not norm:
         return 0
     with get_conn() as conn:
         before = conn.total_changes
         conn.executemany(
             "INSERT OR IGNORE INTO insight_appearances "
-            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter) VALUES (?,?,?,?,?,?,?,?)", rows)
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount) "
+            "VALUES (?,?,?,?,?,?,?,?,?)", norm)
         return conn.total_changes - before
 
 
@@ -160,16 +196,31 @@ def analytics(matter: Optional[str] = None, juridiction: Optional[str] = None) -
         where.append("juridiction_key = ?"); args.append(juridiction)
     clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
 
-    # Les 4 agrégations sont indépendantes → une seule connexion partagée (au lieu de 4).
+    # Médianes de montants par dimension (SQLite n'a pas de MEDIAN) → calcul Python en un passage.
+    def _amounts_by(conn, dim: str) -> dict:
+        acc: dict = {}
+        for r in conn.execute(
+                f"SELECT {dim} AS cle, amount FROM insight_appearances {clause}"
+                f"{'AND' if clause else 'WHERE'} amount IS NOT NULL", args).fetchall():
+            acc.setdefault(r["cle"], []).append(r["amount"])
+        return {k: (_median(v), len(v)) for k, v in acc.items()}
+
+    # Les agrégations sont indépendantes → une seule connexion partagée.
     def _agg(conn, dim: str) -> list:
+        amt = _amounts_by(conn, dim)
         rows = conn.execute(
             f"SELECT {dim} AS cle, COUNT(*) cases, "
             "SUM(CASE WHEN won IN (0,1) THEN 1 ELSE 0 END) decided, "
             "SUM(CASE WHEN won = 1 THEN 1 ELSE 0 END) won "
             f"FROM insight_appearances {clause}"
             f"GROUP BY {dim} HAVING cle IS NOT NULL ORDER BY cases DESC", args).fetchall()
-        return [{"cle": r["cle"], "cases": r["cases"], "decided": r["decided"],
-                 "won": r["won"], "win_rate": _taux(r["won"], r["decided"])} for r in rows]
+        out = []
+        for r in rows:
+            med, n = amt.get(r["cle"], (None, 0))
+            out.append({"cle": r["cle"], "cases": r["cases"], "decided": r["decided"],
+                        "won": r["won"], "win_rate": _taux(r["won"], r["decided"]),
+                        "amount_median": med, "amount_n": n})
+        return out
 
     with get_conn() as conn:
         g = conn.execute(
@@ -178,10 +229,14 @@ def analytics(matter: Optional[str] = None, juridiction: Optional[str] = None) -
             "SUM(CASE WHEN won = 1 THEN 1 ELSE 0 END) won, "
             "COUNT(DISTINCT name_key) lawyers "
             f"FROM insight_appearances {clause}", args).fetchone()
+        all_amts = [r["amount"] for r in conn.execute(
+            f"SELECT amount FROM insight_appearances {clause}"
+            f"{'AND' if clause else 'WHERE'} amount IS NOT NULL", args).fetchall()]
         return {
             "overall": {"cases": g["cases"] or 0, "decided": g["decided"] or 0,
                         "won": g["won"] or 0, "win_rate": _taux(g["won"] or 0, g["decided"] or 0),
-                        "lawyers": g["lawyers"] or 0},
+                        "lawyers": g["lawyers"] or 0,
+                        "amount_median": _median(all_amts), "amount_n": len(all_amts)},
             "by_matter": _agg(conn, "matter"),
             "by_juridiction": _agg(conn, "juridiction_key"),
             "by_year": _agg(conn, "year"),
@@ -222,7 +277,7 @@ def list_lawyers(q: Optional[str], limit: int = 50, sort: str = "cases",
 def get_lawyer(key: str) -> Optional[dict]:
     with get_conn() as conn:
         rows = [dict(r) for r in conn.execute(
-            "SELECT display_name, doc_id, year, juridiction_key, side, won, matter FROM insight_appearances "
+            "SELECT display_name, doc_id, year, juridiction_key, side, won, matter, amount FROM insight_appearances "
             "WHERE name_key = ? ORDER BY year DESC, doc_id", (key,)).fetchall()]
     if not rows:
         return None
@@ -230,6 +285,7 @@ def get_lawyer(key: str) -> Optional[dict]:
     won = sum(1 for r in rows if r["won"] == 1)
     lost = sum(1 for r in rows if r["won"] == 0)
     mts = Counter(r["matter"] for r in rows if r["matter"])
+    amounts = [r["amount"] for r in rows if r["amount"] is not None]
     return {
         "name_key": key,
         "name": max((r["display_name"] for r in rows), key=len),
@@ -239,6 +295,7 @@ def get_lawyer(key: str) -> Optional[dict]:
         "as_demandeur": sum(1 for r in rows if r["side"] == "A"),
         "as_defendeur": sum(1 for r in rows if r["side"] == "B"),
         "won": won, "lost": lost, "decided": won + lost,   # « decided » = issue estimable
+        "amount_median": _median(amounts), "amount_n": len(amounts),
         "matters": [{"name": k, "count": c} for k, c in mts.most_common()],
         "cocounsel": _cocounsel(conn_key=key),
         "cases": rows,
@@ -280,6 +337,7 @@ def overview() -> dict:
         "win_rate": ov["win_rate"],
         "first_year": min(years) if years else None,
         "last_year": max(years) if years else None,
+        "amount_median": ov.get("amount_median"), "amount_n": ov.get("amount_n", 0),
         "top_matters": a["by_matter"][:6],
         "top_juridictions": a["by_juridiction"][:6],
     }
@@ -306,6 +364,7 @@ def compare(keys: List[str]) -> dict:
             "win_rate": _taux(p["won"], p["decided"]),
             "as_demandeur": p["as_demandeur"], "as_defendeur": p["as_defendeur"],
             "first_year": p["first_year"], "last_year": p["last_year"],
+            "amount_median": p.get("amount_median"), "amount_n": p.get("amount_n", 0),
             "matters": p["matters"][:4],
         })
     return {"profiles": profiles}

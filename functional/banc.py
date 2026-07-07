@@ -30,9 +30,10 @@ HITS_VAULT = [
 CORPUS_META = {"decisions": 1200, "texts": 340, "projets": 12, "updated": "2026-06-01",
                "chunks": 5000, "latest_year": 2026, "by_source": {"jurisprudence": 4600, "law": 400}}
 INSIGHT_ROWS = [
-    ("MAITRE JEAN DUPONT", "Jean Dupont", "csj_ch08_2019_demo1", 2019, "csj_ch08", "A", 1, "Droit du travail"),
-    ("MAITRE JEAN DUPONT", "Jean Dupont", "csj_ch08_2020_demo2", 2020, "csj_ch08", "B", 0, "Bail / logement"),
-    ("MAITRE ANNE MARTIN", "Anne Martin", "csj_ch08_2019_demo1", 2019, "csj_ch08", "B", 0, "Droit du travail"),
+    # 9e champ = montant € estimé (indicatif) ; None = décision non chiffrée.
+    ("MAITRE JEAN DUPONT", "Jean Dupont", "csj_ch08_2019_demo1", 2019, "csj_ch08", "A", 1, "Droit du travail", 20000.0),
+    ("MAITRE JEAN DUPONT", "Jean Dupont", "csj_ch08_2020_demo2", 2020, "csj_ch08", "B", 0, "Bail / logement", 8000.0),
+    ("MAITRE ANNE MARTIN", "Anne Martin", "csj_ch08_2019_demo1", 2019, "csj_ch08", "B", 0, "Droit du travail", 20000.0),
 ]
 
 # profils « compte » (dimension plan/admin) et leurs libellés d'affichage

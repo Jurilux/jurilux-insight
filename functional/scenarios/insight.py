@@ -78,9 +78,14 @@ CAS = [
 
     # === /api/insight/overview (public) — KPIs d'en-tête du dashboard ===
     CasUsage("insight-overview", "Insight — vue d'ensemble (public)",
-             "GET /api/insight/overview : KPIs globaux (avocats, décisions, taux) + tops.",
+             "GET /api/insight/overview : KPIs globaux (avocats, décisions, taux, montant médian) + tops.",
              "GET", "/api/insight/overview",
-             {"anonyme": ok(lambda j: j["lawyers"] >= 1 and "top_matters" in j and "win_rate" in j)}),
+             {"anonyme": ok(lambda j: j["lawyers"] >= 1 and "top_matters" in j and "win_rate" in j
+                            and "amount_median" in j and j["amount_n"] >= 1)}),
+    CasUsage("insight-analytics-montants", "Insight — analytics contentieux (public)",
+             "GET /api/insight/analytics : chaque groupe porte montant médian estimé + effectif chiffré.",
+             "GET", "/api/insight/analytics",
+             {"anonyme": ok(lambda j: all("amount_median" in m and "amount_n" in m for m in j["by_matter"]))}),
 
     # === /api/insight/compare (public) — benchmark côte à côte ===
     CasUsage("insight-compare", "Insight — comparateur (public)",

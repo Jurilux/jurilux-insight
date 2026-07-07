@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS insight_appearances (
     side            TEXT,               -- 'A' (demandeur/appelant) | 'B' (défendeur/intimé) | NULL
     won             INTEGER,            -- 1 gagné (estimé) | 0 perdu (estimé) | NULL indéterminé
     matter          TEXT,               -- domaine de droit dominant de la décision (heuristique)
+    amount          REAL,               -- montant € ESTIMÉ du dispositif (indicatif) | NULL
     UNIQUE(name_key, doc_id)
 );
 CREATE INDEX IF NOT EXISTS idx_insight_name ON insight_appearances(name_key);
@@ -273,6 +274,7 @@ def init_db() -> None:
             "ALTER TABLE insight_appearances ADD COLUMN side TEXT",     # 'A' (demandeur/appelant) | 'B' (défendeur/intimé)
             "ALTER TABLE insight_appearances ADD COLUMN won INTEGER",   # 1 gagné (estimé) | 0 perdu | NULL indéterminé
             "ALTER TABLE insight_appearances ADD COLUMN matter TEXT",   # domaine de droit dominant
+            "ALTER TABLE insight_appearances ADD COLUMN amount REAL",   # montant € ESTIMÉ (dispositif) | NULL
             "ALTER TABLE dossiers ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0",  # cloison déontologique
         ):
             try:

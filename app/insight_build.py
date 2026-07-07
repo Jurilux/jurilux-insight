@@ -39,7 +39,7 @@ def run() -> dict:
             e = acc.get(doc_id)
             if e is None:
                 e = acc[doc_id] = {"year": d.get("year"), "jur": d.get("juridiction_key"),
-                                   "lawyers": {}, "outcome": None, "matter": Counter()}
+                                   "lawyers": {}, "outcome": None, "matter": Counter(), "amount": None}
             for k, v in parsed["lawyers"].items():
                 cur = e["lawyers"].get(k)
                 if cur is None:
@@ -49,6 +49,10 @@ def run() -> dict:
             if parsed["outcome"] and not e["outcome"]:
                 e["outcome"] = parsed["outcome"]
             insight.matter_hits(d.get("text") or "", e["matter"])
+            # Montant € estimé de la décision : on garde le plus grand vu sur ses chunks.
+            amt = insight.extract_amount(d.get("text") or "")
+            if amt is not None and (e["amount"] is None or amt > e["amount"]):
+                e["amount"] = amt
         total += len(docs)
         offset += BATCH
         if offset % 100000 == 0:
@@ -61,14 +65,15 @@ def run() -> dict:
             won = None
             if v["side"] and e["outcome"]:
                 won = 1 if v["side"] == e["outcome"] else 0
-            rows.append((k, v["display"], doc_id, e["year"], e["jur"], v["side"], won, matter))
+            rows.append((k, v["display"], doc_id, e["year"], e["jur"], v["side"], won, matter, e["amount"]))
 
     # Remplacement atomique : l'ancien index disparaît puis réapparaît en une transaction.
     with db.get_conn() as conn:
         conn.execute("DELETE FROM insight_appearances")
         conn.executemany(
             "INSERT OR IGNORE INTO insight_appearances "
-            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter) VALUES (?,?,?,?,?,?,?,?)", rows)
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount) "
+            "VALUES (?,?,?,?,?,?,?,?,?)", rows)
         inserted = conn.total_changes
     out = insight.stats()
     print(f"terminé : {total} chunks, {len(acc)} décisions → {out['lawyers']} avocats, "

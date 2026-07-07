@@ -156,6 +156,37 @@ def test_insight_b2b_endpoints(temp_db):
     assert "attachment" in exp.headers.get("content-disposition", "")
 
 
+def test_extract_amount():
+    # Formats européens + marqueur monétaire ; garde-fous (bruit, absence).
+    assert insight.extract_amount("condamne à payer la somme de 12.345,67 €") == 12345.67
+    assert insight.extract_amount("dommages de 1 250 000,00 EUR et 500 euros de frais") == 1250000.0
+    assert insight.extract_amount("article 1382 du code civil, sans montant") is None
+    assert insight.extract_amount("une amende de 50 €") is None  # sous le seuil de bruit (100 €)
+    # Le principal (plus grand) domine.
+    assert insight.extract_amount("15.000 € en principal, 2.000 € d'intérêts") == 15000.0
+
+
+def test_analytics_amounts(temp_db):
+    insight.record_many([
+        ("A A", "Anne A", "d1", 2020, "csj", "A", 1, "Droit du travail", 10000.0),
+        ("A A", "Anne A", "d2", 2021, "csj", "A", 1, "Droit du travail", 30000.0),
+        ("B B", "Bob B", "d3", 2020, "tal", "B", 0, "Bail / logement", None),  # pas de montant
+    ])
+    a = insight.analytics()
+    assert a["overall"]["amount_median"] == 20000.0 and a["overall"]["amount_n"] == 2
+    travail = next(m for m in a["by_matter"] if m["cle"] == "Droit du travail")
+    assert travail["amount_median"] == 20000.0 and travail["amount_n"] == 2
+    # Profil + overview + compare exposent la médiane.
+    assert insight.get_lawyer("A A")["amount_median"] == 20000.0
+    assert insight.overview()["amount_median"] == 20000.0
+    prof = insight.compare(["A A", "B B"])["profiles"]
+    assert next(p for p in prof if p["name_key"] == "A A")["amount_median"] == 20000.0
+    assert next(p for p in prof if p["name_key"] == "B B")["amount_median"] is None
+    # Rétrocompat : record_many accepte encore des tuples à 8 champs (montant = NULL).
+    insight.record_many([("C C", "Carl C", "d9", 2022, "csj", "A", 1, "Pénal")])
+    assert insight.get_lawyer("C C")["amount_median"] is None
+
+
 def test_rgpd_request(temp_db):
     # Demande valide (opposition) -> enregistrée et listable par un admin.
     ok = client.post("/api/insight/rgpd-request",
