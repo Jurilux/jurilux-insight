@@ -1,0 +1,29 @@
+# Bloc Caddy pour insight.jurilux.lu — à AJOUTER au Caddyfile du VPS (puis `caddy reload`).
+# Modèle calqué sur le bloc jurilux.lu : /api,/health -> backend ; /docs -> PDFs ; reste -> SPA.
+#
+# Le backend insight écoute sur 127.0.0.1:8089 (docker-compose de jurilux-insight).
+# Le corpus PDF est PARTAGÉ avec jurilux-api (mêmes décisions) : on sert le même /data/pdfs.
+# Le build front est déployé par jurilux-insight-web dans /var/www/juriscope/insight/current.
+
+insight.jurilux.lu {
+	encode gzip zstd
+
+	# API + santé -> backend jurilux-insight (port dédié 8089)
+	@api path /api/* /health
+	handle @api {
+		reverse_proxy 127.0.0.1:8089
+	}
+
+	# PDFs de jurisprudence (corpus partagé avec jurilux-api)
+	handle_path /docs/* {
+		root * /data/pdfs
+		file_server
+	}
+
+	# SPA statique (build de jurilux-insight-web) — fallback index.html pour le routage client
+	handle {
+		root * /var/www/juriscope/insight/current
+		try_files {path} /index.html
+		file_server
+	}
+}

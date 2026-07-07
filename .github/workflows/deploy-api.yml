@@ -1,11 +1,10 @@
-# Déploiement backend — même mécanique SSH que deploy-dev.yml de jurilux-web
+# Déploiement backend jurilux-insight (insight.jurilux.lu) — même mécanique SSH que jurilux-api
 # (alias deploytarget + user deploy en dur : évite les 2 bugs de quoting résolus).
-# Secrets requis (repo jurilux-api) : DEPLOY_HOST, DEPLOY_SSH_KEY.
-# Prérequis VPS : /opt/jurilux-api/.env présent (voir RUNBOOK_API.md).
+# Secrets requis (repo jurilux-insight) : DEPLOY_HOST, DEPLOY_SSH_KEY.
+# Prérequis VPS : la stack jurilux-api (Meilisearch) up ; /opt/jurilux-insight/.env présent.
 #
-# Rollback : Actions → « Run workflow » → renseigner `ref` avec un tag (ex. v1.0.0)
-# pour redéployer exactement cette version. Rollback rapide sans rebuild : rollback.sh.
-name: Deploy API (VPS OVH)
+# Rollback : Actions → « Run workflow » → renseigner `ref` avec un tag pour redéployer cette version.
+name: Deploy Insight API (VPS OVH)
 
 on:
   push:
@@ -15,12 +14,12 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Ref à déployer (tag/branche/SHA). Vide = ref courante. Rollback : entrer un tag ex. v1.0.0"
+        description: "Ref à déployer (tag/branche/SHA). Vide = ref courante."
         required: false
         default: ""
 
 concurrency:
-  group: deploy-api
+  group: deploy-insight-api
   cancel-in-progress: true
 
 jobs:
@@ -78,21 +77,20 @@ jobs:
 
       - name: Sync sources
         run: |
-          ssh deploytarget "sudo mkdir -p /opt/jurilux-api && sudo chown -R deploy:deploy /opt/jurilux-api"
-          rsync -az --delete --exclude '.env' --exclude 'data/' ./ deploytarget:/opt/jurilux-api/
+          ssh deploytarget "sudo mkdir -p /opt/jurilux-insight && sudo chown -R deploy:deploy /opt/jurilux-insight"
+          rsync -az --delete --exclude '.env' --exclude 'data/' ./ deploytarget:/opt/jurilux-insight/
 
       - name: Build & restart
         run: |
-          ssh deploytarget "cd /opt/jurilux-api && test -f .env || { echo 'ERREUR: /opt/jurilux-api/.env manquant (voir RUNBOOK_API.md)'; exit 1; }"
-          # Garder l'image courante comme :previous → rollback instantané possible (rollback.sh).
-          ssh deploytarget "sudo docker image tag jurilux-api-api:latest jurilux-api-api:previous 2>/dev/null || true"
-          ssh deploytarget "cd /opt/jurilux-api && sudo docker compose up -d --build"
-          # Tracer la version déployée sur le VPS.
-          ssh deploytarget "printf '%s\n' '${{ github.event.inputs.ref || github.sha }}' | sudo tee /opt/jurilux-api/.deployed_ref >/dev/null"
+          ssh deploytarget "cd /opt/jurilux-insight && test -f .env || { echo 'ERREUR: /opt/jurilux-insight/.env manquant'; exit 1; }"
+          # Garder l'image courante comme :previous → rollback instantané possible.
+          ssh deploytarget "sudo docker image tag jurilux-insight-api:latest jurilux-insight-api:previous 2>/dev/null || true"
+          ssh deploytarget "cd /opt/jurilux-insight && sudo docker compose up -d --build"
+          ssh deploytarget "printf '%s\n' '${{ github.event.inputs.ref || github.sha }}' | sudo tee /opt/jurilux-insight/.deployed_ref >/dev/null"
 
       - name: Smoke test
         run: |
           sleep 10
-          ssh deploytarget "curl -sf http://127.0.0.1:8088/health" \
+          ssh deploytarget "curl -sf http://127.0.0.1:8089/health" \
             && echo "health: OK" \
-            || { echo 'health: KO (normal tant que le corpus/API key ne sont pas en place — vérifier docker compose logs)'; exit 1; }
+            || { echo 'health: KO (vérifier que la stack jurilux-api/Meili est up + docker compose logs)'; exit 1; }

@@ -1,69 +1,34 @@
+# Déploiement backend jurilux-insight (insight.jurilux.lu).
+#
+# Choix délibéré : ce produit est un FORK de jurilux-api partageant le MÊME corpus.
+# On NE relance donc PAS un second Meilisearch/Ollama : on RÉUTILISE la stack de
+# jurilux-api déjà en place sur le VPS (Meili publié sur 127.0.0.1:7700). Ici, seul
+# le service `api` tourne, sur le port 8089 (8088 est pris par jurilux-api), avec sa
+# PROPRE base SQLite (comptes/insight isolés de jurilux-api).
+#
+# Prérequis VPS : la stack jurilux-api (meilisearch) doit être up ; /opt/jurilux-insight/.env présent.
 services:
-  meilisearch:
-    image: getmeili/meilisearch:v1.15
-    restart: unless-stopped
-    # Index ~1,3 M docs : le reindex (embedders) mappe beaucoup de fichiers LMDB.
-    # ulimit par défaut (1024) => "too_many_open_files" et tâche settingsUpdate échoue.
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 524288
-    ports:
-      - "127.0.0.1:7700:7700"
-    environment:
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?définir MEILI_MASTER_KEY dans .env}
-      MEILI_ENV: production
-      MEILI_NO_ANALYTICS: "true"
-    volumes:
-      - meili_data:/meili_data
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:7700/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  # Embeddings locaux (recherche sémantique) — BGE-M3 via Ollama, 0 € / souverain.
-  ollama:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    # Concurrence : Meili inonde l'embedder de requêtes en parallèle lors d'un ré-embedding.
-    # Avec 1 seul slot, les requêtes en file dépassent le timeout Meili (~30 s) → tâche échoue.
-    # Plusieurs slots parallèles vident la file plus vite (moins de timeouts).
-    environment:
-      OLLAMA_NUM_PARALLEL: "4"
-      OLLAMA_MAX_QUEUE: "8192"
-      OLLAMA_KEEP_ALIVE: "-1"
-    volumes:
-      - ollama_data:/root/.ollama
-
   api:
     build: .
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8088:8088"
+      - "127.0.0.1:8089:8088"        # host 8089 -> conteneur 8088
+    # Atteindre le Meili/Ollama de la stack jurilux-api via la passerelle hôte.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      MEILI_URL: http://meilisearch:7700
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_URL: ${MEILI_URL:-http://host.docker.internal:7700}
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?définir MEILI_MASTER_KEY dans .env}
       MEILI_INDEX: ${MEILI_INDEX:-chunks}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?définir ANTHROPIC_API_KEY dans .env}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5}
-      # Embedder la requête UNE fois pour les 2 sous-recherches fédérées (perf recherche).
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       PROMPT_VERSION: ${PROMPT_VERSION:-rebuild-2026-07-v1}
-      # Recherche hybride (sémantique + mots-clés). 0 = mots-clés seuls.
-      # 0.5 activé le 2026-07-04 : embedder OpenAI sur lois+projets (~109k chunks)
-      # => les textes de loi sont enfin retrouvés malgré le fossé de vocabulaire.
       HYBRID_SEMANTIC_RATIO: ${HYBRID_SEMANTIC_RATIO:-0.0}
-      # Backoffice : emails admin (séparés par des virgules) — amorce le 1er admin.
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
-      DB_PATH: /var/lib/jurilux/jurilux.db
+      DB_PATH: /var/lib/jurilux/jurilux-insight.db
     volumes:
-      - app_data:/var/lib/jurilux   # base SQLite (comptes, historique) — persistant
-    depends_on:
-      meilisearch:
-        condition: service_healthy
+      - insight_data:/var/lib/jurilux   # base SQLite propre à insight (persistant)
 
 volumes:
-  meili_data:
-  app_data:
-  ollama_data:
+  insight_data:
