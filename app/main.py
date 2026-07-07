@@ -285,8 +285,8 @@ def remove_member(wid: int, uid: int, authorization: Optional[str] = Header(None
 @app.get("/api/workspaces/{wid}/dossiers")
 def list_dossiers(wid: int, authorization: Optional[str] = Header(None)) -> dict:
     user = _require_user(authorization)
-    _require_ws_role(wid, user, ws.ROLES)
-    return {"items": ws.list_dossiers(wid)}
+    role = _require_ws_role(wid, user, ws.ROLES)
+    return {"items": ws.list_dossiers(wid, user["id"], role)}
 
 
 @app.post("/api/workspaces/{wid}/dossiers")

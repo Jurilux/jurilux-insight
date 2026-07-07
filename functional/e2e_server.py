@@ -21,12 +21,15 @@ import os
 import uvicorn
 
 import app.main as m
-from app import auth, db, rag, vault
+from app import auth, db, rag, search, vault
 from app.main import app
 from app.schemas import AskResponse, Citation
-from functional.banc import Banc
+from functional.banc import HITS_CORPUS, Banc
 
 MDP = "password123"
+# Requêtes « hors droit LU » : le stub de recherche ne renvoie AUCUN extrait → refus gracieux
+# (permet de tester le parcours « aucun document pertinent »).
+_HORS_SUJET = ("martien", "recette", "météo", "football")
 
 # --- réponse RAG de démo : sourcée, avec parcours guidé + autre angle ---
 _CITES = [
@@ -49,6 +52,9 @@ _SUGGESTED = "Le salarié peut-il contester un licenciement pour faute grave dev
 
 
 def _answer_demo(q, hits, temperature=0.0, pedagogical=False, history=None, **kw) -> AskResponse:
+    if not hits:  # aucun extrait pertinent → refus gracieux (jamais d'invention)
+        return AskResponse(answer=None, citations=[], refused=True, status="ok",
+                           prompt_version="demo")
     return AskResponse(answer=_ANSWER, citations=list(_CITES), refused=False, status="ok",
                        suggested_question=_SUGGESTED, follow_ups=list(_FOLLOW_UPS),
                        prompt_version="demo")
@@ -71,7 +77,7 @@ def _answer_stream_demo(q, hits, temperature, pedagogical=False, history=None):
            "follow_ups": list(_FOLLOW_UPS), "feedback": None, "prompt_version": "demo"}
 
 
-def _compte(banc: Banc, email: str, plan: str, admin: bool) -> dict:
+def _compte(banc: Banc, email: str, plan: str, admin: bool = False) -> dict:
     """Crée un compte à e-mail FIXE (identifiants de démo prévisibles) et le renvoie."""
     tok = banc.client.post("/api/auth/register",
                            json={"email": email, "password": MDP}).json()["token"]
@@ -82,26 +88,60 @@ def _compte(banc: Banc, email: str, plan: str, admin: bool) -> dict:
     return {"headers": {"Authorization": f"Bearer {tok}"}, "uid": uid, "email": email}
 
 
-def seed(banc: Banc) -> dict:
-    """Provisionne comptes + données de démo. Renvoie un petit index pour l'affichage."""
-    etu = _compte(banc, "etudiant@demo.lu", "student", False)
-    pro = _compte(banc, "pro@demo.lu", "pro", False)
-    adm = _compte(banc, "admin@demo.lu", "student", True)
+def _post(banc: Banc, path: str, headers: dict, body: dict):
+    return banc.client.post(path, json=body, headers=headers)
 
-    # historique visible pour l'étudiant (et matière première du backoffice)
+
+def seed(banc: Banc) -> dict:
+    """Provisionne un jeu de données RÉALISTE multi-cabinets : plusieurs profils, rôles,
+    cloison déontologique, isolation Vault, veille, playbook/prompt/clé. Renvoie un index."""
+    # ---- comptes individuels ----
+    etu = _compte(banc, "etudiant@demo.lu", "student")
+    pro = _compte(banc, "pro@demo.lu", "pro")
+    _compte(banc, "admin@demo.lu", "student", admin=True)
+
+    # ---- Cabinet A : Étude Dupont & Associés (owner + admin + collaborateur) ----
+    dupont_owner = _compte(banc, "dupont.owner@demo.lu", "pro")
+    dupont_asso = _compte(banc, "dupont.associe@demo.lu", "pro")
+    dupont_collab = _compte(banc, "dupont.collab@demo.lu", "student")
+    wid_a = banc.creer_espace(dupont_owner["headers"], "Étude Dupont & Associés")
+    banc.ajouter_membre(dupont_owner["headers"], wid_a, dupont_asso["email"], "admin")
+    banc.ajouter_membre(dupont_owner["headers"], wid_a, dupont_collab["email"], "member")
+    did_open = banc.creer_dossier(dupont_owner["headers"], wid_a, "Dossier Martin c/ SA X")
+    did_restr = banc.creer_dossier(dupont_owner["headers"], wid_a, "Affaire Étoile (confidentiel)")
+    # cloison déontologique : dossier restreint, accordé à l'associé, PAS au collaborateur
+    _post(banc, f"/api/dossiers/{did_restr}/restrict", dupont_owner["headers"], {"restricted": True})
+    _post(banc, f"/api/dossiers/{did_restr}/access", dupont_owner["headers"],
+          {"email": dupont_asso["email"]})
+    banc.creer_alerte(dupont_owner["headers"], "bail commercial résiliation")
+    # playbook + prompt partagés au cabinet, et une clé d'API de service
+    _post(banc, "/api/playbooks", dupont_owner["headers"], {
+        "name": "NDA standard", "workspace_id": wid_a,
+        "rules": [{"label": "Clause de confidentialité", "instruction": "Vérifier la présence d'une clause de confidentialité."},
+                  {"label": "Loi applicable", "instruction": "Vérifier que la loi luxembourgeoise s'applique."}]})
+    _post(banc, "/api/prompts", dupont_owner["headers"],
+          {"title": "Résumé d'arrêt", "body": "Résume l'arrêt en 5 points.", "workspace_id": wid_a})
+    _post(banc, "/api/keys", dupont_owner["headers"], {"name": "Intégration compta"})
+
+    # ---- Cabinet B : Cabinet Weber (séparé — sert à prouver l'isolation inter-cabinet) ----
+    weber_owner = _compte(banc, "weber.owner@demo.lu", "pro")
+    wid_b = banc.creer_espace(weber_owner["headers"], "Cabinet Weber")
+    banc.creer_dossier(weber_owner["headers"], wid_b, "Dossier Weber interne")
+
+    # ---- Vault : isolation par propriétaire (pro a 2 docs, l'associé Dupont 1 doc) ----
+    banc.deposer_doc(pro["headers"], "contrat_bail.txt", b"Le present contrat de bail prevoit un preavis de trois mois.")
+    banc.deposer_doc(pro["headers"], "conclusions.txt", b"Conclusions en defense pour Monsieur Martin.")
+    banc.deposer_doc(dupont_asso["headers"], "nda_client.txt", b"Accord de confidentialite entre les parties.")
+
+    # ---- historique pour l'étudiant (matière première backoffice) ----
     for q in ["Qu'est-ce qu'une faute grave ?", "Délai de préavis légal ?", "Congé parental : conditions ?"]:
         auth.add_history(etu["uid"], q, "Réponse de démo sourcée.", "ok")
 
-    # cabinet + dossier + veille pour le pro
-    wid = banc.creer_espace(pro["headers"], "Cabinet Démo")
-    banc.creer_dossier(pro["headers"], wid, "Dossier Martin c/ SA X")
-    banc.creer_alerte(pro["headers"], "licenciement abusif")
-    banc.deposer_doc(pro["headers"], "contrat_bail.txt", b"Le present contrat de bail...")
-
-    # un permalien public à ouvrir dans le parcours « partage »
+    # ---- permalien public ----
     share_id = banc.creer_partage()
 
-    return {"share_id": share_id, "workspace_id": wid}
+    return {"share_id": share_id, "wid_dupont": wid_a, "wid_weber": wid_b,
+            "did_restreint": did_restr, "did_ouvert": did_open}
 
 
 def main() -> None:
@@ -110,13 +150,19 @@ def main() -> None:
     # réponses RAG de démo enrichies (parcours guidé + autre angle), y compris en streaming
     banc._regler(rag, "answer", _answer_demo)
     banc._regler(rag, "answer_stream", _answer_stream_demo)
+    # recherche : extraits déterministes, SAUF requêtes hors droit LU → aucun extrait (refus)
+    banc._regler(search, "search",
+                 lambda q, k, f: [] if any(x in q.lower() for x in _HORS_SUJET) else list(HITS_CORPUS))
     idx = seed(banc)
 
     host = os.environ.get("E2E_HOST", "127.0.0.1")
     port = int(os.environ.get("E2E_PORT", "8088"))
     print(f"[e2e] app réelle stubée sur http://{host}:{port}")
-    print(f"[e2e] comptes (mdp={MDP}): etudiant@demo.lu · pro@demo.lu · admin@demo.lu")
-    print(f"[e2e] permalien démo: /r/{idx['share_id']}  · workspace #{idx['workspace_id']}")
+    print(f"[e2e] comptes (mdp={MDP}) : etudiant@demo.lu · pro@demo.lu · admin@demo.lu ·")
+    print(f"[e2e]   Cabinet Dupont : dupont.owner@ · dupont.associe@ · dupont.collab@demo.lu")
+    print(f"[e2e]   Cabinet Weber  : weber.owner@demo.lu")
+    print(f"[e2e] permalien démo : /r/{idx['share_id']}  · cabinets #{idx['wid_dupont']} (Dupont) #{idx['wid_weber']} (Weber)")
+    print(f"[e2e] SHARE_ID={idx['share_id']}")
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 

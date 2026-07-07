@@ -138,17 +138,24 @@ def test_ethical_walls(temp_db):
     did = client.post(f"/api/workspaces/{wid}/dossiers", json={"name": "Aff sensible"}, headers=ho).json()["id"]
     # non restreint : le membre voit
     assert client.get(f"/api/dossiers/{did}/items", headers=hm).status_code == 200
+    noms = lambda h: [d["name"] for d in client.get(f"/api/workspaces/{wid}/dossiers", headers=h).json()["items"]]
+    assert "Aff sensible" in noms(hm)  # non restreint : listé
     # on restreint : le membre ne voit plus (404, existence masquée)
     assert client.post(f"/api/dossiers/{did}/restrict", json={"restricted": True}, headers=ho).json()["restricted"] is True
     assert client.get(f"/api/dossiers/{did}/items", headers=hm).status_code == 404
+    # ET il disparaît de la LISTE (son intitulé ne doit pas fuiter — cloison réelle)
+    assert "Aff sensible" not in noms(hm)
+    assert "Aff sensible" in noms(ho)  # l'owner le voit toujours dans la liste
     # l'owner garde l'accès
     assert client.get(f"/api/dossiers/{did}/items", headers=ho).status_code == 200
-    # on autorise nommément le membre → il revoit
+    # on autorise nommément le membre → il revoit (items ET liste)
     uid = client.post(f"/api/dossiers/{did}/access", json={"email": "membre@b.com"}, headers=ho).json()["user_id"]
     assert client.get(f"/api/dossiers/{did}/items", headers=hm).status_code == 200
-    # révocation → 404 de nouveau
+    assert "Aff sensible" in noms(hm)
+    # révocation → 404 de nouveau + disparaît de la liste
     assert client.delete(f"/api/dossiers/{did}/access/{uid}", headers=ho).json() == {"ok": True}
     assert client.get(f"/api/dossiers/{did}/items", headers=hm).status_code == 404
+    assert "Aff sensible" not in noms(hm)
     # un membre ne peut pas gérer les cloisons
     assert client.post(f"/api/dossiers/{did}/restrict", json={"restricted": False}, headers=hm).status_code == 403
 

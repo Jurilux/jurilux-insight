@@ -111,13 +111,26 @@ def delete_dossier(dossier_id: int) -> bool:
         return cur.rowcount > 0
 
 
-def list_dossiers(workspace_id: int) -> List[dict]:
+def list_dossiers(workspace_id: int, user_id: int, role: str) -> List[dict]:
+    """Liste les dossiers de l'espace pour un membre donné. Cloison déontologique : un dossier
+    RESTREINT reste **invisible** (absent de la liste, pas seulement inaccessible) sauf pour les
+    owner/admin de l'espace et les membres explicitement autorisés — sinon même son intitulé
+    (ex. un dossier en conflit d'intérêts) fuiterait au reste du cabinet."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT d.id, d.name, d.created_at, d.restricted, "
             "  (SELECT COUNT(*) FROM dossier_items i WHERE i.dossier_id = d.id) AS items "
             "FROM dossiers d WHERE d.workspace_id = ? ORDER BY d.id DESC", (workspace_id,)).fetchall()
-    return [{**dict(r), "restricted": bool(r["restricted"])} for r in rows]
+        prive = role not in ("owner", "admin")
+        autorises = {r["dossier_id"] for r in conn.execute(
+            "SELECT dossier_id FROM dossier_access WHERE user_id = ?", (user_id,)).fetchall()} if prive else set()
+    out = []
+    for r in rows:
+        restreint = bool(r["restricted"])
+        if restreint and prive and r["id"] not in autorises:
+            continue  # cloison : ce membre ne doit pas même voir l'existence du dossier
+        out.append({**dict(r), "restricted": restreint})
+    return out
 
 
 def dossier_workspace(dossier_id: int) -> Optional[int]:
