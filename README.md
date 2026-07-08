@@ -1,3 +1,10 @@
+# ⚠️ DÉPÔT ARCHIVÉ — produit fusionné dans Jurilux
+
+> **Ce fork est terminé.** Ses fonctionnalités (montants estimés, délais, articles visés,
+> cabinets, overview/compare/export, demandes RGPD) ont été **ré-internalisées dans
+> [`jurilux-api`](https://github.com/Jurilux/jurilux-api)** (décision produit : un seul produit).
+> Ne plus rien développer ici — la source de vérité est `jurilux-api`/`jurilux-web`.
+
 # jurilux-api
 
 Backend RAG de Jurilux : FastAPI (127.0.0.1:8088) + Meilisearch (127.0.0.1:7700) + API Claude.
