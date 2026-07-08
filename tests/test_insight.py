@@ -33,6 +33,34 @@ def test_name_key_groups_variants():
     assert insight.name_key("François KREMER") == insight.name_key("Francois  KREMER")
 
 
+def test_extract_lawyers_abbrev_et_particules():
+    # abréviation « Me » (très fréquente dans les décisions LU)
+    assert "Guy CASTEGNARO" in insight.extract_lawyers("représenté par Me Guy CASTEGNARO, avocat à la Cour")
+    assert "Guy CASTEGNARO" in insight.extract_lawyers("Me. Guy CASTEGNARO pour la demanderesse")
+    # particule patronymique minuscule (« van », « de », « d'»)
+    assert any("van GERVEN" in n for n in insight.extract_lawyers("assisté de Maître Jean van GERVEN"))
+    assert any("de BACKER" in n for n in insight.extract_lawyers("Maître Pierre de BACKER plaide"))
+    assert any("ARGENT" in n for n in insight.extract_lawyers("Maître Marie d'ARGENT, avocate"))
+    # GARDE-FOU RGPD : un titre judiciaire n'est JAMAIS capté comme avocat
+    assert insight.extract_lawyers("Maître Jean GREFFIER en chef") == []
+    assert insight.extract_lawyers("assisté de Maître Paul MAGISTRAT") == []
+
+
+def test_side_partie_civile_et_prevenu():
+    txt = ("La partie civile, représentée par Maître Guy CASTEGNARO, demande réparation. "
+           "Le prévenu, assisté de Maître Lex THIELEN, conclut à la relaxe.")
+    p = insight.parse_chunk(txt)
+    assert p["lawyers"][insight.name_key("Guy CASTEGNARO")]["side"] == "A"
+    assert p["lawyers"][insight.name_key("Lex THIELEN")]["side"] == "B"
+
+
+def test_delai_marqueur_signification():
+    # signification de l'assignation le 3 mars 2018 → décision du 10 juin 2020 (~2,3 ans)
+    txt = "Vu l'acte signifié le 3 mars 2018 par lequel la demanderesse a introduit l'instance."
+    d = insight.extract_delai(txt, "20200610_TAL_ch02_7")
+    assert d is not None and 800 <= d <= 850
+
+
 def test_parse_chunk_side_and_outcome():
     txt = ("ENTRE la société X, demanderesse, représentée par Maître Guy CASTEGNARO, avocat, "
            "ET la société Y, défenderesse, représentée par Maître Lex THIELEN, avocat. "

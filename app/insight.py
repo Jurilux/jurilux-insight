@@ -20,12 +20,20 @@ from .schemas import Citation
 # --- avocats ---
 _FIRST = r"[A-ZÉÈÀÂÎÏÔÜÇ][a-zà-öø-ÿ'’.-]*"
 _SURNAME = r"[A-ZÉÈÀÂÎÏÔÜÇ]{2,}(?:[-'’ ][A-ZÉÈÀÂÎÏÔÜÇ]{2,})*"
-_NAME_RE = re.compile(r"\bMa[iî]tre\s+(" + _FIRST + r"(?:[-\s]" + _FIRST + r"){0,2}\s+" + _SURNAME + r")")
-_PLACEHOLDER_RE = re.compile(r"\d|AVOCAT|PERSONNE|JUSTICE|SOCIET|REQU", re.IGNORECASE)
+# Particule patronymique minuscule optionnelle devant le NOM en capitales (« de », « van », « d'»…).
+_PARTICLE = r"(?:(?:de|van|von|der|den|del|della|dos|da|di|le|la|el)\s+|d['’]\s*)?"
+# « Maître » OU l'abréviation « Me » / « Me. » (très fréquente dans les décisions LU).
+_NAME_RE = re.compile(
+    r"\b(?:Ma[iî]tre|Me)\.?\s+(" + _FIRST + r"(?:[-\s]" + _FIRST + r"){0,2}\s+"
+    + _PARTICLE + _SURNAME + r")")
+# Anti-placeholder + GARDE-FOU RGPD : jamais un titre judiciaire capté comme « avocat ».
+_PLACEHOLDER_RE = re.compile(
+    r"\d|AVOCAT|PERSONNE|JUSTICE|SOCIET|REQU|GREFFIER|MAGISTRAT|HUISSIER|PROCUREUR|SUBSTITUT",
+    re.IGNORECASE)
 
-# --- rôles (côté) ---
-_ROLE_A = re.compile(r"demand(?:eur|eresse)|appelant|requ[ée]rant|poursuivant", re.IGNORECASE)
-_ROLE_B = re.compile(r"d[ée]fend(?:eur|eresse|resse)|intim[ée]", re.IGNORECASE)
+# --- rôles (côté) --- formes masculines/féminines + partie civile (A) et prévenu (B, pénal).
+_ROLE_A = re.compile(r"demand(?:eur|eresse)|appelant|requ[ée]rant|poursuivant|partie\s+civile", re.IGNORECASE)
+_ROLE_B = re.compile(r"d[ée]fend(?:eur|eresse|resse)|intim[ée]|pr[ée]venu", re.IGNORECASE)
 
 # --- issue (dispositif) ---
 _DISPO_HINT = re.compile(r"par ces motifs|ainsi (?:fait|jug[ée])|d[ée]boute|condamne|confirme|r[ée]forme|casse",
@@ -96,7 +104,8 @@ _DATE_NUM_RE = re.compile(r"\b(\d{1,2})[/.](\d{1,2})[/.]((?:19|20)\d{2})\b")
 # Marqueurs du POINT DE DÉPART de l'instance (assignation, requête… ou jugement de 1re instance en appel).
 _START_HINT = re.compile(
     r"assignation|exploit|requ[êe]te\s+introductive|acte\s+introductif|introdui\w*\s+l['’]instance|"
-    r"citation\s+[àa]\s+compara|jugement\s+(?:entrepris|a\s+quo|dont\s+appel|du\s+tribunal|rendu\s+le|du)\b",
+    r"citation\s+[àa]\s+compara|signifi\w+|acte\s+d['’]huissier|"
+    r"jugement\s+(?:entrepris|a\s+quo|dont\s+appel|du\s+tribunal|rendu\s+le|du)\b",
     re.IGNORECASE)
 _DELAI_MIN = 30            # < 1 mois : bruit
 _DELAI_MAX = 15 * 365      # > 15 ans : aberration
