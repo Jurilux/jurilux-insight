@@ -71,6 +71,35 @@ def test_parse_chunk_side_and_outcome():
     assert p["outcome"] == "B"  # « déboute » la demanderesse -> côté B l'emporte
 
 
+def test_outcome_refine():
+    # « infirme » → l'appelant (côté A) l'emporte
+    t = ("ENTRE X, appelant, représenté par Maître Guy CASTEGNARO, ET Y, intimé, assisté de "
+         "Maître Lex THIELEN. Par ces motifs, infirme le jugement entrepris.")
+    assert insight.parse_chunk(t)["outcome"] == "A"
+    # « condamne … à payer » → le demandeur obtient gain → A
+    t2 = ("La demanderesse est représentée par Maître Anne MOREL. Par ces motifs, condamne le "
+          "défendeur à payer 10.000 € à la demanderesse.")
+    assert insight.parse_chunk(t2)["outcome"] == "A"
+    # irrecevabilité → la demande échoue → B
+    assert insight.parse_chunk("Par ces motifs, déclare la demande irrecevable.")["outcome"] == "B"
+    # ambigu (A ET B présents) → None (on ne tranche pas)
+    assert insight.parse_chunk("Par ces motifs, fait droit en partie et déboute pour le surplus.")["outcome"] is None
+
+
+def test_sens_refine():
+    assert insight.extract_sens("infirme le jugement de première instance") == "réformation"
+    assert insight.extract_sens("rejette l'appel comme non fondé") == "rejet"
+
+
+def test_firm_multi_token():
+    t = "représenté par Maître Guy CASTEGNARO de l'Étude Bonn Steichen & Partners, avocats à la Cour."
+    p = insight.parse_chunk(t)
+    assert p["lawyers"][insight.name_key("Guy CASTEGNARO")]["firm"] == "Bonn Steichen & Partners"
+    # cabinet à un seul token toujours capté, mots de phrase happés retirés
+    t2 = "assisté de Maître Lex THIELEN du cabinet Castegnaro Attendu que le tribunal…"
+    assert insight.parse_chunk(t2)["lawyers"][insight.name_key("Lex THIELEN")]["firm"] == "Castegnaro"
+
+
 def test_matter_classification():
     from collections import Counter
     c = Counter()

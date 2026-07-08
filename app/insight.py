@@ -38,10 +38,14 @@ _ROLE_B = re.compile(r"d[ée]fend(?:eur|eresse|resse)|intim[ée]|pr[ée]venu", r
 # --- issue (dispositif) ---
 _DISPO_HINT = re.compile(r"par ces motifs|ainsi (?:fait|jug[ée])|d[ée]boute|condamne|confirme|r[ée]forme|casse",
                          re.IGNORECASE)
-_OUT_A = re.compile(r"fait droit|d[ée]clar\w* .{0,8}fond|dit .{0,12}fond[ée]|r[ée]forme|casse et annule|annule le jugement",
-                    re.IGNORECASE)
-_OUT_B = re.compile(r"d[ée]boute|non fond[ée]|rejette|confirme le jugement|confirme l['’]|pourvoi.{0,30}non fond",
-                    re.IGNORECASE)
+_OUT_A = re.compile(
+    r"fait droit|d[ée]clar\w* .{0,25}fond[ée]|dit .{0,12}fond[ée]|r[ée]forme|infirme|"
+    r"casse et annule|annule le jugement|condamne .{0,40}(?:[àa]\s+(?:payer|verser|indemniser)|au\s+paiement)",
+    re.IGNORECASE)
+_OUT_B = re.compile(
+    r"d[ée]boute|non fond[ée]|rejette|confirme le jugement|confirme l['’]|pourvoi.{0,30}non fond|"
+    r"d[ée]clar\w* .{0,25}irrecevable|dit n['’]y avoir lieu",
+    re.IGNORECASE)
 
 # --- domaines de droit (matière dominante d'une décision, heuristique par mots-clés) ---
 _MATTER_RE = [
@@ -188,9 +192,9 @@ def extract_articles(text: str) -> List[str]:
 # --- sens de la décision (dispositif) : signal d'issue plus fiable que l'heuristique A/B ---
 _SENS = [
     ("cassation", re.compile(r"casse(?:\s+et\s+annule)?", re.I)),
-    ("rejet", re.compile(r"rejette\s+le\s+pourvoi|rejette\s+le\s+recours", re.I)),
+    ("rejet", re.compile(r"rejette\s+le\s+pourvoi|rejette\s+le\s+recours|rejette\s+l['’]appel", re.I)),
     ("irrecevabilité", re.compile(r"d[ée]clare\s+.{0,20}irrecevable|irrecevabilit[ée]", re.I)),
-    ("réformation", re.compile(r"r[ée]forme", re.I)),
+    ("réformation", re.compile(r"r[ée]forme|infirme", re.I)),
     ("confirmation", re.compile(r"confirme\s+le\s+jugement|confirme\s+la\s+d[ée]cision|confirme\b", re.I)),
 ]
 
@@ -250,9 +254,13 @@ def _side_before(flat: str, pos: int, window: int = 320) -> Optional[str]:
 #     assumée). On n'infère jamais un cabinet ; sans mention « Étude/cabinet », l'avocat n'en a pas. ---
 # Nom de cabinet : tokens en capitale initiale, joints par « & »/« et » ; PAS de « . » (borne
 # de phrase). On coupe ensuite les mots courants capitalisés d'une phrase suivante.
+# Nom de cabinet = 1 à 4 tokens à capitale initiale, joints par espace / « & » / « et »
+# (ex. « Étude Castegnaro », « cabinet Bonn Steichen & Partners »). Le trim retire ensuite
+# les mots de phrase capitalisés happés en queue.
+_FIRM_TOKEN = r"[A-ZÉÈÀ][\wÀ-ÿ'’\-]*"
 _FIRM_RE = re.compile(
-    r"(?:[ÉE]tude|cabinet)\s+(?:d['’]avocats?\s+)?"
-    r"([A-ZÉÈÀ][\wÀ-ÿ'’\-]*(?:\s+(?:&|et)\s+|\s+)[A-ZÉÈÀ][\wÀ-ÿ'’\-]*|[A-ZÉÈÀ][\wÀ-ÿ'’\-]+)")
+    r"(?:[ÉE]tude|cabinet|soci[ée]t[ée]\s+d['’]avocats)\s+(?:d['’]avocats?\s+)?"
+    r"(" + _FIRM_TOKEN + r"(?:(?:\s+(?:&|et)\s+|\s+)" + _FIRM_TOKEN + r"){0,3})")
 _FIRM_BAD = re.compile(r"\d|AVOCAT|PERSONNE|JUSTICE|SOCIET|REQU", re.IGNORECASE)
 # Mots capitalisés d'attaque de phrase à ne pas avaler dans le nom du cabinet.
 _FIRM_STOP = {"POUR", "LE", "LA", "LES", "IL", "ELLE", "ATTENDU", "VU", "SUR", "EN", "PAR",
