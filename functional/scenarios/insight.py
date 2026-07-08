@@ -86,6 +86,15 @@ CAS = [
              "GET /api/insight/analytics : chaque groupe porte montant médian estimé + effectif chiffré.",
              "GET", "/api/insight/analytics",
              {"anonyme": ok(lambda j: all("amount_median" in m and "amount_n" in m for m in j["by_matter"]))}),
+    CasUsage("insight-analytics-delais", "Insight — analytics contentieux (public)",
+             "GET /api/insight/analytics : délai de procédure médian estimé (jours) par groupe.",
+             "GET", "/api/insight/analytics",
+             {"anonyme": ok(lambda j: all("delai_median" in m and "delai_n" in m for m in j["by_juridiction"])
+                            and j["overall"]["delai_median"] == 500 and j["overall"]["delai_n"] == 2)}),
+    CasUsage("insight-overview-delai", "Insight — vue d'ensemble (public)",
+             "GET /api/insight/overview : le KPI délai médian estimé est exposé.",
+             "GET", "/api/insight/overview",
+             {"anonyme": ok(lambda j: j.get("delai_median") == 500 and j.get("delai_n") == 2)}),
 
     # === /api/insight/compare (public) — benchmark côte à côte ===
     CasUsage("insight-compare", "Insight — comparateur (public)",

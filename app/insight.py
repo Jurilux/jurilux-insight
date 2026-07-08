@@ -26,10 +26,12 @@ _PARTICLE = r"(?:(?:de|van|von|der|den|del|della|dos|da|di|le|la|el)\s+|d['’]\
 _NAME_RE = re.compile(
     r"\b(?:Ma[iî]tre|Me)\.?\s+(" + _FIRST + r"(?:[-\s]" + _FIRST + r"){0,2}\s+"
     + _PARTICLE + _SURNAME + r")")
+# Jetons « interdits » partagés (placeholders de pseudonymisation, entités non-personnes) et
+# titres judiciaires — factorisés pour rester cohérents entre le filtre avocats et le filtre cabinets.
+_BAD_TOKEN = r"\d|AVOCAT|PERSONNE|JUSTICE|SOCIET|REQU"
+_JUDICIAL_TITLE = r"GREFFIER|MAGISTRAT|HUISSIER|PROCUREUR|SUBSTITUT"
 # Anti-placeholder + GARDE-FOU RGPD : jamais un titre judiciaire capté comme « avocat ».
-_PLACEHOLDER_RE = re.compile(
-    r"\d|AVOCAT|PERSONNE|JUSTICE|SOCIET|REQU|GREFFIER|MAGISTRAT|HUISSIER|PROCUREUR|SUBSTITUT",
-    re.IGNORECASE)
+_PLACEHOLDER_RE = re.compile(_BAD_TOKEN + "|" + _JUDICIAL_TITLE, re.IGNORECASE)
 
 # --- rôles (côté) --- formes masculines/féminines + partie civile (A) et prévenu (B, pénal).
 _ROLE_A = re.compile(r"demand(?:eur|eresse)|appelant|requ[ée]rant|poursuivant|partie\s+civile", re.IGNORECASE)
@@ -269,7 +271,7 @@ _FIRM_TOKEN = r"[A-ZÉÈÀ][\wÀ-ÿ'’\-]*"
 _FIRM_RE = re.compile(
     r"(?:[ÉE]tude|cabinet|soci[ée]t[ée]\s+d['’]avocats)\s+(?:d['’]avocats?\s+)?"
     r"(" + _FIRM_TOKEN + r"(?:(?:\s+(?:&|et)\s+|\s+)" + _FIRM_TOKEN + r"){0,3})")
-_FIRM_BAD = re.compile(r"\d|AVOCAT|PERSONNE|JUSTICE|SOCIET|REQU", re.IGNORECASE)
+_FIRM_BAD = re.compile(_BAD_TOKEN, re.IGNORECASE)
 # Mots capitalisés d'attaque de phrase à ne pas avaler dans le nom du cabinet.
 _FIRM_STOP = {"POUR", "LE", "LA", "LES", "IL", "ELLE", "ATTENDU", "VU", "SUR", "EN", "PAR",
               "ET", "DEMEURANT", "AVOCAT", "AVOCATE", "AYANT", "REPRESENTE", "ASSISTE"}

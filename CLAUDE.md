@@ -33,32 +33,43 @@
 Extraction **locale et déterministe** (regex/heuristiques, **aucun appel LLM**) depuis la
 jurisprudence publique. `insight_build.py` (re)construit la table `insight_appearances` à chaque
 refresh du corpus (cron). Tant que le build n'a pas tourné, les endpoints renvoient des ensembles
-vides.
+vides. Détail complet des extracteurs : **`docs/EXTRACTION.md`**.
 
 **Règle produit NON NÉGOCIABLE (RGPD/CNPD) :** profilage des **AVOCATS uniquement** (« Maître X »)
-et des parties. **JAMAIS de magistrats ni de greffiers.** Taux de succès toujours présentés comme
-**estimés / indicatifs**, jamais comme certains (heuristique sur le dispositif).
+et des parties. **JAMAIS de magistrats ni de greffiers** (garde-fou `_BAD_TOKEN`/`_JUDICIAL_TITLE`).
+Taux de succès et montants toujours présentés comme **estimés / indicatifs**, jamais certains.
 
-### Endpoints analytics (`/api/insight/*`, PUBLIC)
-- `GET /api/insight/overview` — **KPIs d'en-tête du dashboard** : volumétrie globale (avocats,
-  décisions, estimables, taux global), période couverte, top matières & juridictions (`overview()`).
-- `GET /api/insight/analytics?matter&juridiction` — volumes + taux de succès estimé par matière /
-  juridiction / année (`analytics()`).
-- `GET /api/insight/lawyers?q&limit&sort&matter` — liste/recherche d'avocats, tri `cases|recent|winrate`
-  (`list_lawyers()`).
-- `GET /api/insight/lawyers/{key}` — fiche profil : décisions, côté (A/B), gagné/perdu estimé,
-  matières, **réseau de confrères** (`get_lawyer()` + `_cocounsel()`).
-- `GET /api/insight/compare?keys=k1,k2,...` — **benchmark côte à côte** de 2 à 6 avocats (`compare()`).
-- `GET /api/insight/export/lawyers.csv?q&limit&sort&matter` — **export CSV** (tableur cabinet/assureur)
-  (`export_lawyers_csv()`).
-- `GET /api/insight/matters`, `GET /api/insight/stats` — filtres & volumétrie.
-- `insight.lawyer_lookup(q)` **court-circuite le RAG** dans `/api/ask` : une question nominative
-  renvoie directement le profil + décisions.
+### Signaux extraits par décision (table `insight_appearances`, 1 ligne = 1 avocat × 1 décision)
+Colonnes : `name_key`, `display_name`, `doc_id`, `year`, `juridiction_key`, `side` (A demandeur/
+appelant · B défendeur/intimé), `won` (1/0/NULL estimé), `matter`, `amount` (montant € estimé),
+`firm` (cabinet nommé), `articles` (« ; »-séparés), `sens` (dispositif), `duree` (délai en jours).
+Extracteurs (tous couverts partiellement, jamais inventés) : `extract_lawyers`/`parse_chunk`
+(nom + « Me »/particules), `_side_before`, `_OUT_A/_OUT_B` (issue), `extract_sens`, `matter_hits`
+(13 domaines), `extract_amount` (marqueur €/EUR pré/suffixe), `extract_articles`, `_firm_near`,
+`extract_delai` (date de départ près d'un marqueur d'introduction → jours).
+
+### Endpoints analytics (`/api/insight/*`, PUBLIC sauf mention)
+- `GET /overview` — KPIs d'en-tête : avocats, décisions, taux global, **montant médian**,
+  **délai médian**, période, top matières & juridictions (`overview()`).
+- `GET /analytics?matter&juridiction` — par matière / juridiction / année : volumes, taux estimé,
+  **montant médian** (`amount_median`/`amount_n`), **délai médian** (`delai_median`/`delai_n`).
+- `GET /lawyers?q&limit&sort&matter` — liste/recherche, tri `cases|recent|winrate` (`list_lawyers()`).
+- `GET /lawyers/{key}` — fiche profil : décisions, côté, issue estimée, matières,
+  **réseau de confrères** (`get_lawyer()` + `_cocounsel()`).
+- `GET /firms` · `GET /firms/{name}` — **cabinets nommés** (dimension D, `list_firms`/`get_firm`).
+- `GET /compare?keys=k1,k2,...` — **benchmark** de 2 à 6 avocats (`compare()`, <2 → 422).
+- `GET /articles?limit` — **textes de loi les plus cités** (`top_articles`).
+- `GET /export/lawyers.csv?q&limit&sort&matter` — **export CSV** (téléchargement).
+- `GET /matters`, `GET /stats` — filtres & volumétrie.
+- `POST /rgpd-request` — **exercice des droits** d'un avocat profilé (opposition/rectification/
+  accès) ; `GET /api/admin/insight/rgpd-requests` (admin) pour la file.
+- `insight.lawyer_lookup(q)` **court-circuite le RAG** dans `/api/ask` (question nominative).
 
 ## Contrat d'API — additions rétrocompatibles uniquement
 Les formes existantes de `jurilux-api` restent valables (auth, `/api/me`, `/api/ask`, insight…).
-Les nouveautés B2B (`overview`, `compare`, `export/lawyers.csv`) sont des **ajouts** : ne pas casser
-les chemins/formes existants. Verrouillé par `tests/` (gate CI).
+Les endpoints B2B ci-dessus sont des **ajouts** : ne pas casser les chemins/formes existants.
+Verrouillé par `tests/` : `tests/test_insight.py` (unitaire) + `tests/test_functional.py`
+(scénarios `functional/scenarios/insight.py`, injection `INSIGHT_ROWS`). Gate CI.
 
 ## Espace utilisateur, sous-systèmes hérités
 Inchangés depuis `jurilux-api` : `users/sessions/history/feedback/shares/workspaces/dossiers/

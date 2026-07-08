@@ -30,10 +30,10 @@ HITS_VAULT = [
 CORPUS_META = {"decisions": 1200, "texts": 340, "projets": 12, "updated": "2026-06-01",
                "chunks": 5000, "latest_year": 2026, "by_source": {"jurisprudence": 4600, "law": 400}}
 INSIGHT_ROWS = [
-    # 9e = montant € ; 10e = cabinet ; 11e = articles visés (liste) ; 12e = sens du dispositif.
-    ("MAITRE JEAN DUPONT", "Jean Dupont", "csj_ch08_2019_demo1", 2019, "csj_ch08", "A", 1, "Droit du travail", 20000.0, "ÉTUDE WEBER", ["L.124-10"], "confirmation"),
-    ("MAITRE JEAN DUPONT", "Jean Dupont", "csj_ch08_2020_demo2", 2020, "csj_ch08", "B", 0, "Bail / logement", 8000.0, "ÉTUDE WEBER", ["1719"], "réformation"),
-    ("MAITRE ANNE MARTIN", "Anne Martin", "csj_ch08_2019_demo1", 2019, "csj_ch08", "B", 0, "Droit du travail", 20000.0, None, ["L.124-10"], "confirmation"),
+    # 9e = montant € ; 10e = cabinet ; 11e = articles visés (liste) ; 12e = sens ; 13e = délai (jours).
+    ("MAITRE JEAN DUPONT", "Jean Dupont", "csj_ch08_2019_demo1", 2019, "csj_ch08", "A", 1, "Droit du travail", 20000.0, "ÉTUDE WEBER", ["L.124-10"], "confirmation", 400),
+    ("MAITRE JEAN DUPONT", "Jean Dupont", "csj_ch08_2020_demo2", 2020, "csj_ch08", "B", 0, "Bail / logement", 8000.0, "ÉTUDE WEBER", ["1719"], "réformation", 600),
+    ("MAITRE ANNE MARTIN", "Anne Martin", "csj_ch08_2019_demo1", 2019, "csj_ch08", "B", 0, "Droit du travail", 20000.0, None, ["L.124-10"], "confirmation", None),
 ]
 
 # profils « compte » (dimension plan/admin) et leurs libellés d'affichage
