@@ -281,6 +281,7 @@ def init_db() -> None:
             "ALTER TABLE insight_appearances ADD COLUMN firm TEXT",     # cabinet nommé (« Étude X ») | NULL
             "ALTER TABLE insight_appearances ADD COLUMN articles TEXT", # articles de loi visés (« ; »-séparés) | NULL
             "ALTER TABLE insight_appearances ADD COLUMN sens TEXT",     # sens du dispositif | NULL
+            "ALTER TABLE insight_appearances ADD COLUMN duree INTEGER", # délai de procédure ESTIMÉ (jours) | NULL
             "ALTER TABLE dossiers ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0",  # cloison déontologique
         ):
             try:

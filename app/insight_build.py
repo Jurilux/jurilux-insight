@@ -40,7 +40,7 @@ def run() -> dict:
             if e is None:
                 e = acc[doc_id] = {"year": d.get("year"), "jur": d.get("juridiction_key"),
                                    "lawyers": {}, "outcome": None, "matter": Counter(),
-                                   "amount": None, "articles": [], "sens": None}
+                                   "amount": None, "articles": [], "sens": None, "duree": None}
             for k, v in parsed["lawyers"].items():
                 cur = e["lawyers"].get(k)
                 if cur is None:
@@ -63,6 +63,10 @@ def run() -> dict:
                     e["articles"].append(a)
             if e["sens"] is None:
                 e["sens"] = insight.extract_sens(d.get("text") or "")
+            # Délai de procédure estimé (jours) : on garde le plus long vu sur ses chunks.
+            dlai = insight.extract_delai(d.get("text") or "", doc_id)
+            if dlai is not None and (e["duree"] is None or dlai > e["duree"]):
+                e["duree"] = dlai
         total += len(docs)
         offset += BATCH
         if offset % 100000 == 0:
@@ -76,17 +80,17 @@ def run() -> dict:
             if v["side"] and e["outcome"]:
                 won = 1 if v["side"] == e["outcome"] else 0
             rows.append((k, v["display"], doc_id, e["year"], e["jur"], v["side"], won, matter,
-                         e["amount"], v.get("firm"), e["articles"], e["sens"]))
+                         e["amount"], v.get("firm"), e["articles"], e["sens"], e["duree"]))
 
     # Remplacement atomique : l'ancien index disparaît puis réapparaît en une transaction.
     with db.get_conn() as conn:
         conn.execute("DELETE FROM insight_appearances")
         conn.executemany(
             "INSERT OR IGNORE INTO insight_appearances "
-            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm, articles, sens) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            [(k, dn, di, y, j, s, w, mt, am, fm, "; ".join(ar) if ar else None, se)
-             for (k, dn, di, y, j, s, w, mt, am, fm, ar, se) in rows])
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm, articles, sens, duree) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(k, dn, di, y, j, s, w, mt, am, fm, "; ".join(ar) if ar else None, se, du)
+             for (k, dn, di, y, j, s, w, mt, am, fm, ar, se, du) in rows])
         inserted = conn.total_changes
     out = insight.stats()
     print(f"terminé : {total} chunks, {len(acc)} décisions → {out['lawyers']} avocats, "

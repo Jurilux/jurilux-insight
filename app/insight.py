@@ -8,6 +8,7 @@ Extraction :
 - côté (A = demandeur/appelant/requérant, B = défendeur/intimé) par proximité des marqueurs de rôle ;
 - issue de la décision (heuristique sur le dispositif) → gagné/perdu ESTIMÉ (indicatif, jamais certain).
 """
+import datetime
 import re
 import unicodedata
 from collections import Counter
@@ -82,6 +83,70 @@ def _median(vals: List[float]) -> Optional[float]:
         return None
     mid = n // 2
     return round(s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2, 2)
+
+
+# --- délais de procédure : durée ESTIMÉE (jours) entre l'introduction de l'instance et la décision ---
+# Extraction déterministe, couverture PARTIELLE assumée (comme montants/cabinets) : on ne calcule
+# un délai que si une date de départ plausible est mentionnée près d'un marqueur d'introduction.
+_MOIS = {"janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6,
+         "juillet": 7, "août": 8, "aout": 8, "septembre": 9, "octobre": 10, "novembre": 11,
+         "décembre": 12, "decembre": 12}
+_DATE_TXT_RE = re.compile(r"\b(\d{1,2})\s+(" + "|".join(_MOIS) + r")\s+((?:19|20)\d{2})\b", re.IGNORECASE)
+_DATE_NUM_RE = re.compile(r"\b(\d{1,2})[/.](\d{1,2})[/.]((?:19|20)\d{2})\b")
+# Marqueurs du POINT DE DÉPART de l'instance (assignation, requête… ou jugement de 1re instance en appel).
+_START_HINT = re.compile(
+    r"assignation|exploit|requ[êe]te\s+introductive|acte\s+introductif|introdui\w*\s+l['’]instance|"
+    r"citation\s+[àa]\s+compara|jugement\s+(?:entrepris|a\s+quo|dont\s+appel|du\s+tribunal|rendu\s+le|du)\b",
+    re.IGNORECASE)
+_DELAI_MIN = 30            # < 1 mois : bruit
+_DELAI_MAX = 15 * 365      # > 15 ans : aberration
+
+
+def _docid_date(doc_id: Optional[str]) -> Optional[datetime.date]:
+    """Date de la décision déduite du préfixe AAAAMMJJ du doc_id (sinon None)."""
+    m = re.search(r"((?:19|20)\d{2})(\d{2})(\d{2})", doc_id or "")
+    if not m:
+        return None
+    try:
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _mk_date(y: int, mo: int, d: int) -> Optional[datetime.date]:
+    try:
+        return datetime.date(y, mo, d)
+    except ValueError:
+        return None
+
+
+def extract_delai(text: str, doc_id: str) -> Optional[int]:
+    """Durée ESTIMÉE de la procédure en JOURS (indicatif) : nombre de jours entre la date de
+    décision (préfixe du doc_id) et la date de départ plausible la plus ancienne mentionnée près
+    d'un marqueur d'introduction (assignation, requête, jugement entrepris…). None si non estimable."""
+    dec = _docid_date(doc_id)
+    if dec is None:
+        return None
+    flat = re.sub(r"\s+", " ", text or "")
+    cands: List[int] = []
+    starts = []
+    for m in _DATE_TXT_RE.finditer(flat):
+        mo = _MOIS.get(m.group(2).lower())
+        d = _mk_date(int(m.group(3)), mo, int(m.group(1))) if mo else None
+        if d:
+            starts.append((m.start(), d))
+    for m in _DATE_NUM_RE.finditer(flat):
+        d = _mk_date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        if d:
+            starts.append((m.start(), d))
+    for pos, d in starts:
+        delta = (dec - d).days
+        if not (_DELAI_MIN <= delta <= _DELAI_MAX):
+            continue
+        # un marqueur de départ doit figurer dans les 120 caractères précédant la date
+        if _START_HINT.search(flat[max(0, pos - 120):pos]):
+            cands.append(delta)
+    return max(cands) if cands else None
 
 
 # --- articles de loi visés : extraction déterministe des références « article X » ---
@@ -242,14 +307,16 @@ def parse_chunk(text: str) -> dict:
 # ---------- accès données ----------
 def record_many(rows) -> int:
     """rows: (name_key, display_name, doc_id, year, juridiction_key, side, won, matter
-    [, amount[, firm[, articles[, sens]]]]). Champs 9–12 optionnels → None si absents.
-    `articles` peut être une liste (jointe par « ; ») ou une chaîne déjà jointe. INSERT OR IGNORE."""
+    [, amount[, firm[, articles[, sens[, duree]]]]]). Champs 9–13 optionnels → None si absents.
+    `articles` peut être une liste (jointe par « ; ») ou une chaîne déjà jointe. `duree` = jours.
+    INSERT OR IGNORE."""
     def _prep(r):
-        # Complète à 12 champs (montant, cabinet, articles, sens optionnels) ; `articles` liste → chaîne.
-        name_k, disp, doc, year, jur, side, won, matter, amount, firm, arts, sens = (tuple(r) + (None,) * 4)[:12]
+        # Complète à 13 champs (montant, cabinet, articles, sens, délai optionnels) ; `articles` liste → chaîne.
+        (name_k, disp, doc, year, jur, side, won, matter,
+         amount, firm, arts, sens, duree) = (tuple(r) + (None,) * 5)[:13]
         if isinstance(arts, (list, tuple)):
             arts = "; ".join(arts) if arts else None
-        return (name_k, disp, doc, year, jur, side, won, matter, amount, firm, arts, sens)
+        return (name_k, disp, doc, year, jur, side, won, matter, amount, firm, arts, sens, duree)
     norm = [_prep(r) for r in rows]
     if not norm:
         return 0
@@ -257,8 +324,8 @@ def record_many(rows) -> int:
         before = conn.total_changes
         conn.executemany(
             "INSERT OR IGNORE INTO insight_appearances "
-            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm, articles, sens) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", norm)
+            "(name_key, display_name, doc_id, year, juridiction_key, side, won, matter, amount, firm, articles, sens, duree) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", norm)
         return conn.total_changes - before
 
 
@@ -292,21 +359,26 @@ def analytics(matter: Optional[str] = None, juridiction: Optional[str] = None) -
         where.append("juridiction_key = ?"); args.append(juridiction)
     clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
     amt_where = clause + ("AND" if clause else "WHERE") + " amount IS NOT NULL"
+    dur_where = clause + ("AND" if clause else "WHERE") + " duree IS NOT NULL"
 
     with get_conn() as conn:
-        # Montants : SQLite n'a pas de MEDIAN → on charge les montants UNE fois, puis on
+        # Montants ET délais : SQLite n'a pas de MEDIAN → on charge les valeurs UNE fois, puis on
         # calcule les médianes par dimension (matière/juridiction/année) et globale en Python.
         amt_rows = conn.execute(
             f"SELECT matter, juridiction_key, year, amount FROM insight_appearances {amt_where}", args).fetchall()
+        dur_rows = conn.execute(
+            f"SELECT matter, juridiction_key, year, duree FROM insight_appearances {dur_where}", args).fetchall()
 
-        def _amt_by(dim: Optional[str]) -> dict:
+        def _median_by(src, val_col: str, dim: Optional[str]) -> dict:
             acc: dict = {}
-            for r in amt_rows:
-                acc.setdefault(None if dim is None else r[dim], []).append(r["amount"])
+            for r in src:
+                acc.setdefault(None if dim is None else r[dim], []).append(r[val_col])
             return {k: (_median(v), len(v)) for k, v in acc.items()}
 
-        amt = {d: _amt_by(d) for d in ("matter", "juridiction_key", "year")}
-        overall_amt = _amt_by(None).get(None, (None, 0))
+        amt = {d: _median_by(amt_rows, "amount", d) for d in ("matter", "juridiction_key", "year")}
+        dur = {d: _median_by(dur_rows, "duree", d) for d in ("matter", "juridiction_key", "year")}
+        overall_amt = _median_by(amt_rows, "amount", None).get(None, (None, 0))
+        overall_dur = _median_by(dur_rows, "duree", None).get(None, (None, 0))
 
         def _agg(dim: str) -> list:
             rows = conn.execute(
@@ -318,9 +390,11 @@ def analytics(matter: Optional[str] = None, juridiction: Optional[str] = None) -
             out = []
             for r in rows:
                 med, n = amt[dim].get(r["cle"], (None, 0))
+                dmed, dn = dur[dim].get(r["cle"], (None, 0))
                 out.append({"cle": r["cle"], "cases": r["cases"], "decided": r["decided"],
                             "won": r["won"], "win_rate": _taux(r["won"], r["decided"]),
-                            "amount_median": med, "amount_n": n})
+                            "amount_median": med, "amount_n": n,
+                            "delai_median": None if dmed is None else int(dmed), "delai_n": dn})
             return out
 
         g = conn.execute(
@@ -333,7 +407,9 @@ def analytics(matter: Optional[str] = None, juridiction: Optional[str] = None) -
             "overall": {"cases": g["cases"] or 0, "decided": g["decided"] or 0,
                         "won": g["won"] or 0, "win_rate": _taux(g["won"] or 0, g["decided"] or 0),
                         "lawyers": g["lawyers"] or 0,
-                        "amount_median": overall_amt[0], "amount_n": overall_amt[1]},
+                        "amount_median": overall_amt[0], "amount_n": overall_amt[1],
+                        "delai_median": None if overall_dur[0] is None else int(overall_dur[0]),
+                        "delai_n": overall_dur[1]},
             "by_matter": _agg("matter"),
             "by_juridiction": _agg("juridiction_key"),
             "by_year": _agg("year"),
@@ -503,6 +579,7 @@ def overview() -> dict:
         "first_year": min(years) if years else None,
         "last_year": max(years) if years else None,
         "amount_median": ov.get("amount_median"), "amount_n": ov.get("amount_n", 0),
+        "delai_median": ov.get("delai_median"), "delai_n": ov.get("delai_n", 0),
         "top_matters": a["by_matter"][:6],
         "top_juridictions": a["by_juridiction"][:6],
     }

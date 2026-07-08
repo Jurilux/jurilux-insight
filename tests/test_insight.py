@@ -108,6 +108,35 @@ def test_lawyer_lookup(temp_db):
     assert insight.lawyer_lookup("Quelles décisions pour l'avocat Zzzzxyz ?") is None
 
 
+def test_extract_delai():
+    # assignation du 15 janvier 2019 → décision (doc_id) du 20 mars 2021 : ~795 jours
+    txt = "Vu l'assignation du 15 janvier 2019, la Cour statue. Par ces motifs, confirme le jugement."
+    d = insight.extract_delai(txt, "20210320_CSJ_ch03_42")
+    assert d is not None and 790 <= d <= 800
+    # date sans marqueur d'introduction → None (on n'invente pas de délai)
+    assert insight.extract_delai("réunion tenue le 15 janvier 2019.", "20210320_CSJ_42") is None
+    # date postérieure / délai aberrant → None
+    assert insight.extract_delai("assignation du 15 janvier 2019", "20190115_CSJ_1") is None
+    # doc_id sans date → None
+    assert insight.extract_delai("assignation du 15 janvier 2019", "CSJ_sans_date") is None
+
+
+def test_analytics_delai(temp_db):
+    # duree = 13e champ de record_many (jours)
+    insight.record_many([
+        ("A A", "A A", "d1", 2020, "csj", "A", 1, "Droit du travail", None, None, None, None, 400),
+        ("B B", "B B", "d1", 2020, "csj", "B", 0, "Droit du travail", None, None, None, None, 600),
+        ("C C", "C C", "d2", 2021, "tal", "A", 1, "Bail / logement", None, None, None, None, None),
+    ])
+    a = insight.analytics()
+    assert a["overall"]["delai_median"] == 500 and a["overall"]["delai_n"] == 2
+    csj = next(r for r in a["by_juridiction"] if r["cle"] == "csj")
+    assert csj["delai_median"] == 500 and csj["delai_n"] == 2
+    tal = next(r for r in a["by_juridiction"] if r["cle"] == "tal")
+    assert tal["delai_median"] is None and tal["delai_n"] == 0
+    assert insight.overview()["delai_median"] == 500
+
+
 def test_insight_public(temp_db):
     # Déploiement client : Insight accessible par défaut (plus de gate admin).
     assert client.get("/api/insight/lawyers").status_code == 200
