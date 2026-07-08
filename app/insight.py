@@ -49,16 +49,19 @@ _OUT_B = re.compile(
 
 # --- domaines de droit (matière dominante d'une décision, heuristique par mots-clés) ---
 _MATTER_RE = [
-    ("Droit du travail", re.compile(r"licenciement|contrat de travail|salari[ée]|pr[ée]avis|d[ée]mission|employeur|tribunal du travail|prud", re.I)),
-    ("Bail / logement", re.compile(r"\bbail\b|bailleur|preneur|\bloyer|location|expulsion", re.I)),
-    ("Famille", re.compile(r"divorce|garde d.{0,4}enfant|autorit[ée] parentale|pension alimentaire|[ée]poux|filiation", re.I)),
-    ("Successions", re.compile(r"succession|h[ée]riti|\blegs\b|testament|indivision", re.I)),
-    ("Sociétés / commercial", re.compile(r"soci[ée]t[ée]|g[ée]rant|actionnaire|faillite|liquidation|fonds de commerce", re.I)),
-    ("Responsabilité civile", re.compile(r"responsabilit[ée]|dommage|pr[ée]judice|indemnisation", re.I)),
-    ("Assurances", re.compile(r"assurance|assureur|sinistre", re.I)),
-    ("Immobilier / construction", re.compile(r"immobili|copropri[ée]t[ée]|servitude|usufruit|construction", re.I)),
-    ("Pénal", re.compile(r"p[ée]nal|pr[ée]venu|infraction|d[ée]lit\b|correctionnel", re.I)),
-    ("Fiscal / administratif", re.compile(r"fiscal|imp[ôo]t|\btaxe|administratif|contribution", re.I)),
+    ("Droit du travail", re.compile(r"licenciement|contrat de travail|salari[ée]|pr[ée]avis|d[ée]mission|employeur|tribunal du travail|prud|harc[èe]lement|faute grave|indemnit[ée] de d[ée]part|\bCDD\b|\bCDI\b", re.I)),
+    ("Bail / logement", re.compile(r"\bbail\b|bailleur|preneur|\bloyer|location|expulsion|cong[ée] [àa] donner|trouble de jouissance", re.I)),
+    ("Famille", re.compile(r"divorce|garde d.{0,4}enfant|autorit[ée] parentale|pension alimentaire|[ée]poux|filiation|prestation compensatoire|r[ée]sidence de l.enfant", re.I)),
+    ("Successions", re.compile(r"succession|h[ée]riti|\blegs\b|testament|indivision|r[ée]serve h[ée]r[ée]ditaire", re.I)),
+    ("Sociétés / commercial", re.compile(r"soci[ée]t[ée]|g[ée]rant|actionnaire|faillite|liquidation|fonds de commerce|cession de parts|assembl[ée]e g[ée]n[ée]rale|dividende|administrateur", re.I)),
+    ("Responsabilité civile", re.compile(r"responsabilit[ée]|dommage|pr[ée]judice|indemnisation|lien de causalit[ée]", re.I)),
+    ("Assurances", re.compile(r"assurance|assureur|sinistre|police d.assurance", re.I)),
+    ("Immobilier / construction", re.compile(r"immobili|copropri[ée]t[ée]|servitude|usufruit|construction|vice cach[ée]|mitoyennet[ée]", re.I)),
+    ("Pénal", re.compile(r"p[ée]nal|pr[ée]venu|infraction|d[ée]lit\b|correctionnel|\bvol\b|escroquerie|coups et blessures|stup[ée]fiants|r[ée]cidive", re.I)),
+    ("Fiscal / administratif", re.compile(r"fiscal|imp[ôo]t|\btaxe|administratif|contribution|redressement fiscal|\bTVA\b", re.I)),
+    ("Propriété intellectuelle", re.compile(r"marque|brevet|droit d.auteur|contrefa[çc]on|propri[ée]t[ée] intellectuelle|dessin\w* et mod[èe]le", re.I)),
+    ("Consommation / crédit", re.compile(r"consommateur|clause abusive|cr[ée]dit [àa] la consommation|d[ée]marchage|surendettement", re.I)),
+    ("Circulation / roulage", re.compile(r"accident de la circulation|\broulage\b|code de la route|d[ée]lit de fuite|permis de conduire", re.I)),
 ]
 _DOCID_MATTER = [("TRAVAIL", "Droit du travail"), ("BAIL", "Bail / logement")]
 
@@ -70,6 +73,9 @@ _AMOUNT_RE = re.compile(
     re.IGNORECASE)
 _AMOUNT_MIN = 100.0            # sous 100 € : bruit (frais symboliques, art. de loi) → ignoré
 _AMOUNT_MAX = 500_000_000.0   # garde-fou anti-aberration
+# Variante avec le marqueur AVANT le nombre (« EUR 12.345 », « € 1.500 »).
+_AMOUNT_PRE_RE = re.compile(
+    r"(?:€|EUR)\s*(\d{1,3}(?:[.\s]\d{3})+(?:,\d{1,2})?|\d+(?:,\d{1,2})?)", re.IGNORECASE)
 
 
 def _parse_amount(raw: str) -> Optional[float]:
@@ -84,7 +90,9 @@ def _parse_amount(raw: str) -> Optional[float]:
 def extract_amount(text: str) -> Optional[float]:
     """Montant € ESTIMÉ d'une décision (indicatif) : la plus grande somme plausible mentionnée
     (le principal domine généralement intérêts/frais). Aucune certitude — heuristique locale."""
-    vals = [v for m in _AMOUNT_RE.finditer(text or "") if (v := _parse_amount(m.group(1))) is not None]
+    t = text or ""
+    vals = [v for m in _AMOUNT_RE.finditer(t) if (v := _parse_amount(m.group(1))) is not None]
+    vals += [v for m in _AMOUNT_PRE_RE.finditer(t) if (v := _parse_amount(m.group(1))) is not None]
     return max(vals) if vals else None
 
 

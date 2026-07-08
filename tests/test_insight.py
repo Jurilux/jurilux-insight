@@ -109,6 +109,27 @@ def test_matter_classification():
     assert insight.matter_from_docid("20250313_JPLBAIL_978") == "Bail / logement"
 
 
+def test_matter_new_domains():
+    from collections import Counter
+
+    def top(txt):
+        c = Counter()
+        insight.matter_hits(txt, c)
+        return c.most_common(1)[0][0] if c else None
+    assert top("action en contrefaçon de la marque et du brevet") == "Propriété intellectuelle"
+    assert top("clause abusive dans un crédit à la consommation, consommateur lésé") == "Consommation / crédit"
+    assert top("accident de la circulation, délit de fuite, permis de conduire retiré") == "Circulation / roulage"
+    assert top("harcèlement moral au travail et licenciement pour faute grave") == "Droit du travail"
+
+
+def test_amount_marqueur_prefixe():
+    assert insight.extract_amount("condamne à payer EUR 12.345,67 à titre principal") == 12345.67
+    assert insight.extract_amount("soit € 1.500 de dommages et intérêts") == 1500.0
+    # suffixe toujours géré, et le principal (le plus grand) l'emporte
+    assert insight.extract_amount("la somme de 250 000 € outre 3.000 € de frais") == 250000.0
+    assert insight.extract_amount("aucune somme chiffrée dans cette décision") is None
+
+
 def test_insight_store_and_profile(temp_db):
     insight.record_many([
         ("GUY CASTEGNARO", "Guy CASTEGNARO", "d1", 2020, "csj", "A", 1, "Droit du travail"),
